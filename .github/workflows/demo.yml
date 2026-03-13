@@ -20,11 +20,17 @@ on:
         description: "Admin account password (min 8 chars)"
         required: true
         type: string
+      disable_registration:
+        description: "Disable public registration (only admin can login)"
+        required: true
+        type: boolean
+        default: true
 
 jobs:
   deploy-demo:
     name: Deploy Demo
     runs-on: ubuntu-latest
+    environment: demo
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -182,6 +188,7 @@ jobs:
           fi
           echo "Demo URL: $DEMO_URL"
           echo "demo_url=$DEMO_URL" >> "$GITHUB_OUTPUT"
+          echo "jwt_secret=$JWT_SECRET" >> "$GITHUB_OUTPUT"
 
       # --- Seed admin and start sync loop ---
       - name: Seed admin user
@@ -238,6 +245,18 @@ jobs:
             npx wrangler kv key put --namespace-id="$KV_ID" "meta:user_count" "1" 
             echo "Admin user written directly to KV"
           fi
+
+      - name: Lock down demo
+        if: inputs.disable_registration == true
+        run: |
+          cd worker
+          # Redeploy with registration disabled
+          npx wrangler deploy \
+            --config wrangler.demo.toml \
+            --var JWT_SECRET:${{ steps.deploy.outputs.jwt_secret }} \
+            --var AGENT_SHARED_SECRET:${{ steps.agent.outputs.agent_secret }} \
+            --var DISABLE_REGISTRATION:true 2>&1
+          echo "Registration disabled — only seeded admin can use the demo"
 
       - name: Start agent sync loop
         run: |
