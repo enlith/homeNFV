@@ -1,0 +1,68 @@
+name: Nightly Jobs
+
+on:
+  schedule:
+    - cron: "0 3 * * *"  # 3 AM UTC daily
+  workflow_dispatch:
+
+jobs:
+  db-backup:
+    name: D1 Backup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - run: cd worker && npm ci
+      - name: Export D1
+        run: cd worker && npx wrangler d1 export homenfv-db --remote --output=../backup.sql
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Upload backup
+        uses: actions/upload-artifact@v4
+        with:
+          name: d1-backup-${{ github.run_number }}
+          path: backup.sql
+          retention-days: 30
+
+  cache-cleanup:
+    name: R2 Cache Cleanup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - run: cd worker && npm ci
+      - name: Clean stale cache
+        run: cd worker && node scripts/cache-cleanup.js
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+  security-audit:
+    name: Weekly Security Audit
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '0 3 * * 0' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - name: Audit Worker
+        run: cd worker && npm audit
+        continue-on-error: true
+      - name: Audit Agent
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          cd agent && govulncheck ./...
+        continue-on-error: true

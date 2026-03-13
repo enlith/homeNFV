@@ -1,0 +1,22 @@
+# Secrets - never commit
+worker/.dev.vars
+agent/config.env
+deploy/cloudflared.yml
+
+# Cloudflare
+.wrangler/
+
+# Build artifacts
+agent/homenfv-agent
+dist/
+
+# Dependencies
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

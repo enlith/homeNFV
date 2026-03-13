@@ -1,0 +1,4 @@
+# Copy to .dev.vars and fill in values
+AGENT_SHARED_SECRET=<generate-with-openssl-rand-hex-32>
+JWT_SECRET=<generate-with-openssl-rand-hex-32>
+AGENT_URL=http://localhost:8787
