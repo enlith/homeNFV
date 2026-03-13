@@ -124,6 +124,7 @@ export function browsePage(
       <div class="actions">
         <button onclick="document.getElementById('upload').click()">⬆ Upload</button>
         <button class="secondary" onclick="promptMkdir()">📁 New Folder</button>
+        <button class="secondary" onclick="promptUploadURL()">🔗 Upload URL</button>
         <input type="file" id="upload" style="display:none" multiple onchange="uploadFiles(this.files)">
         <span id="upload-status" style="font-size:13px"></span>
       </div>
@@ -157,6 +158,25 @@ export function browsePage(
       fetch('/api/mkdir?path=' + encodeURIComponent(dirPath), { method: 'POST' })
         .then(r => r.json())
         .then(() => location.reload());
+    }
+    async function promptUploadURL() {
+      const url = prompt('File URL to download:');
+      if (!url) return;
+      let name = url.split('/').pop().split('?')[0] || 'downloaded-file';
+      name = prompt('Save as:', name);
+      if (!name) return;
+      const filePath = currentPath === '/' ? '/' + name : currentPath + '/' + name;
+      const status = document.getElementById('upload-status');
+      status.textContent = 'Downloading from URL...';
+      const resp = await fetch('/api/upload-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, path: filePath })
+      });
+      const data = await resp.json();
+      if (!resp.ok) { status.textContent = 'Error: ' + data.error; return; }
+      status.textContent = 'Done! (' + (data.size ? (data.size/1024/1024).toFixed(1) + 'MB' : '') + ')';
+      setTimeout(() => location.reload(), 500);
     }
     </script>
   `, user);

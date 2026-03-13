@@ -148,6 +148,45 @@ export async function handleMkdir(filePath: string, env: Env): Promise<Response>
   return json({ status: "created" }, 201);
 }
 
+// Upload file from URL
+export async function handleUploadFromURL(filePath: string, sourceURL: string, env: Env): Promise<Response> {
+  // Fetch the remote file
+  let resp: globalThis.Response;
+  try {
+    resp = await fetch(sourceURL, { redirect: "follow" });
+  } catch {
+    return json({ error: "Failed to fetch URL" }, 400);
+  }
+  if (!resp.ok) return json({ error: `URL returned ${resp.status}` }, 400);
+
+  const contentType = resp.headers.get("Content-Type") || "application/octet-stream";
+  const body = await resp.arrayBuffer();
+  const fileSize = body.byteLength;
+
+  // Check quota
+  const quota = await checkUploadAllowed(fileSize, env);
+  if (!quota.allowed) return json({ error: quota.reason }, 403);
+
+  // Try agent first
+  const agentResp = await agentFetch(env, "PUT", `/api/files?path=${encodeURIComponent(filePath)}`, new Blob([body]).stream());
+  if (agentResp?.ok) {
+    await incrementUploadCount(env);
+    await updateFileMetadata(env, filePath, { size: fileSize, pending_sync: 0 });
+    return json({ status: "uploaded", size: fileSize }, 201);
+  }
+
+  // Agent offline — store in R2 temp
+  if (fileSize > LIMITS.MAX_FILE_SIZE) {
+    return json({ error: `Home offline. File too large for temp storage (max ${LIMITS.MAX_FILE_SIZE / 1024 / 1024}MB)` }, 413);
+  }
+
+  await env.R2.put(`temp/${filePath}`, body, { httpMetadata: { contentType } });
+  await incrementUploadCount(env);
+  await updateFileMetadata(env, filePath, { size: fileSize, pending_sync: 1 });
+
+  return json({ status: "queued", message: "Home offline — file queued for sync", size: fileSize }, 202);
+}
+
 // Sync directory listing from agent into D1
 async function syncDirMetadata(env: Env, dirPath: string, files: Array<{ name: string; is_dir: boolean; size: number; modified: number }>) {
   const stmts = files.map((f) => {
