@@ -24,14 +24,15 @@ jobs:
           fi
 
           echo "Checking: ${URL}/api/health"
-          RESPONSE=$(curl -s "${URL}/api/health" || echo "connection failed")
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${URL}/api/health" || echo "000")
-
-          echo "HTTP Status: $STATUS"
-          echo "Response: $RESPONSE"
-
-          if [ "$STATUS" != "200" ]; then
-            echo "::warning::Health check failed with status $STATUS"
-            exit 1
-          fi
-          echo "✅ Worker is healthy"
+          for i in $(seq 1 5); do
+            STATUS=$(curl -s -o /tmp/health.txt -w "%{http_code}" "${URL}/api/health" || echo "000")
+            RESPONSE=$(cat /tmp/health.txt 2>/dev/null || echo "connection failed")
+            echo "Attempt $i — HTTP $STATUS: $RESPONSE"
+            if [ "$STATUS" = "200" ]; then
+              echo "✅ Worker is healthy"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::warning::Health check failed after 5 attempts (last status: $STATUS)"
+          exit 1
