@@ -35,6 +35,7 @@ func main() {
 	})
 	mux.Handle("/api/files", fileHandler)
 	mux.HandleFunc("/api/mkdir", fileHandler.Mkdir)
+	mux.HandleFunc("/api/fetch-url", fileHandler.FetchURL)
 
 	var handler http.Handler = mux
 	if secret != "" {

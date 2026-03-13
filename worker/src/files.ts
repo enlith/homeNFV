@@ -150,7 +150,17 @@ export async function handleMkdir(filePath: string, env: Env): Promise<Response>
 
 // Upload file from URL
 export async function handleUploadFromURL(filePath: string, sourceURL: string, env: Env): Promise<Response> {
-  // Fetch the remote file
+  // Try agent first — agent fetches URL directly to disk (no memory limit)
+  const agentResp = await agentFetch(env, "POST", "/api/fetch-url",
+    new Blob([JSON.stringify({ url: sourceURL, path: filePath })]).stream());
+  if (agentResp?.ok) {
+    const data = await agentResp.json() as { size: number };
+    await incrementUploadCount(env);
+    await updateFileMetadata(env, filePath, { size: data.size, pending_sync: 0 });
+    return json({ status: "uploaded", size: data.size }, 201);
+  }
+
+  // Agent offline — Worker fetches URL and stores in R2 temp (≤25MB)
   let resp: globalThis.Response;
   try {
     resp = await fetch(sourceURL, { redirect: "follow" });
@@ -159,23 +169,13 @@ export async function handleUploadFromURL(filePath: string, sourceURL: string, e
   }
   if (!resp.ok) return json({ error: `URL returned ${resp.status}` }, 400);
 
-  const contentType = resp.headers.get("Content-Type") || "application/octet-stream";
   const body = await resp.arrayBuffer();
   const fileSize = body.byteLength;
+  const contentType = resp.headers.get("Content-Type") || "application/octet-stream";
 
-  // Check quota
   const quota = await checkUploadAllowed(fileSize, env);
   if (!quota.allowed) return json({ error: quota.reason }, 403);
 
-  // Try agent first
-  const agentResp = await agentFetch(env, "PUT", `/api/files?path=${encodeURIComponent(filePath)}`, new Blob([body]).stream());
-  if (agentResp?.ok) {
-    await incrementUploadCount(env);
-    await updateFileMetadata(env, filePath, { size: fileSize, pending_sync: 0 });
-    return json({ status: "uploaded", size: fileSize }, 201);
-  }
-
-  // Agent offline — store in R2 temp
   if (fileSize > LIMITS.MAX_FILE_SIZE) {
     return json({ error: `Home offline. File too large for temp storage (max ${LIMITS.MAX_FILE_SIZE / 1024 / 1024}MB)` }, 413);
   }
