@@ -74,13 +74,14 @@ jobs:
 
       - name: Apply D1 schema
         run: |
-          # Apply schema via Cloudflare API directly
-          SQL=$(cat worker/migrations/0001_init.sql | tr '\n' ' ')
+          SQL=$(cat worker/migrations/0001_init.sql)
+          PAYLOAD=$(jq -n --arg sql "$SQL" '{sql: $sql}')
           curl -sf -X POST \
             "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/d1/database/${{ steps.resources.outputs.d1_id }}/query" \
             -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" \
             -H "Content-Type: application/json" \
-            -d "{\"sql\": \"$SQL\"}"
+            -d "$PAYLOAD"
+          echo ""
           echo "D1 schema applied"
 
       # --- Build and start agent ---
