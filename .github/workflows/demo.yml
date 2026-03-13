@@ -11,6 +11,11 @@ on:
         options:
           - "30"
           - "60"
+      admin_username:
+        description: "Admin username"
+        required: true
+        default: "admin"
+        type: string
       admin_password:
         description: "Admin account password (min 8 chars)"
         required: true
@@ -111,7 +116,7 @@ jobs:
           echo "Registering admin user..."
           curl -s -X POST "${DEMO_URL}/api/auth/register" \
             -H "Content-Type: application/json" \
-            -d '{"username":"admin","password":"${{ inputs.admin_password }}"}'
+            -d '{"username":"${{ inputs.admin_username }}","password":"${{ inputs.admin_password }}"}'
           echo ""
           echo "Admin user created (first user = auto-approved admin)"
 
@@ -122,7 +127,7 @@ jobs:
           echo "============================================"
           echo ""
           echo "  URL:      ${{ steps.deploy.outputs.demo_url }}"
-          echo "  Username: admin"
+          echo "  Username: ${{ inputs.admin_username }}"
           echo "  Duration: ${{ inputs.duration }} minutes"
           echo "  Demo ID:  ${{ steps.resources.outputs.demo_id }}"
           echo ""
