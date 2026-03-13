@@ -1,0 +1,158 @@
+name: Demo Environment
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "How long to keep the demo running (minutes)"
+        required: true
+        type: choice
+        default: "30"
+        options:
+          - "30"
+          - "60"
+      admin_password:
+        description: "Admin account password (min 8 chars)"
+        required: true
+        type: string
+
+jobs:
+  deploy-demo:
+    name: Deploy Demo
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - run: cd worker && npm ci
+
+      - name: Create demo resources
+        id: resources
+        run: |
+          DEMO_ID="demo-$(date +%s)"
+          echo "demo_id=$DEMO_ID" >> "$GITHUB_OUTPUT"
+
+          # Create KV namespace
+          KV_OUT=$(cd worker && npx wrangler kv namespace create "${DEMO_ID}-kv" 2>&1)
+          KV_ID=$(echo "$KV_OUT" | grep -oP 'id = "\K[^"]+')
+          echo "kv_id=$KV_ID" >> "$GITHUB_OUTPUT"
+
+          # Create D1 database
+          D1_OUT=$(cd worker && npx wrangler d1 create "${DEMO_ID}-db" 2>&1)
+          D1_ID=$(echo "$D1_OUT" | grep -oP 'database_id = \K\S+' | tr -d '"')
+          echo "d1_id=$D1_ID" >> "$GITHUB_OUTPUT"
+
+          # Create R2 bucket
+          cd worker && npx wrangler r2 bucket create "${DEMO_ID}-cache" 2>&1 || true
+
+          echo "Demo ID: $DEMO_ID"
+          echo "KV: $KV_ID"
+          echo "D1: $D1_ID"
+
+      - name: Apply D1 schema
+        run: |
+          cd worker
+          # Apply migration directly
+          npx wrangler d1 execute "${{ steps.resources.outputs.demo_id }}-db" \
+            --remote --file=migrations/0001_init.sql
+
+      - name: Generate demo wrangler.toml
+        run: |
+          cat > worker/wrangler.demo.toml << 'EOF'
+          name = "homenfv-demo-${{ steps.resources.outputs.demo_id }}"
+          main = "src/index.ts"
+          compatibility_date = "2024-12-01"
+
+          [vars]
+          AGENT_URL = "http://localhost:9999"
+
+          [[kv_namespaces]]
+          binding = "KV"
+          id = "${{ steps.resources.outputs.kv_id }}"
+
+          [[r2_buckets]]
+          binding = "R2"
+          bucket_name = "${{ steps.resources.outputs.demo_id }}-cache"
+
+          [[d1_databases]]
+          binding = "DB"
+          database_name = "${{ steps.resources.outputs.demo_id }}-db"
+          database_id = "${{ steps.resources.outputs.d1_id }}"
+          EOF
+
+      - name: Deploy demo worker
+        id: deploy
+        run: |
+          cd worker
+          # Generate temp secrets
+          JWT_SECRET=$(openssl rand -hex 32)
+          AGENT_SECRET=$(openssl rand -hex 32)
+
+          DEPLOY_OUT=$(npx wrangler deploy \
+            --config wrangler.demo.toml \
+            --var JWT_SECRET:${JWT_SECRET} \
+            --var AGENT_SHARED_SECRET:${AGENT_SECRET} 2>&1)
+          echo "$DEPLOY_OUT"
+
+          # Extract the workers.dev URL
+          DEMO_URL=$(echo "$DEPLOY_OUT" | grep -oP 'https://[^\s]+\.workers\.dev')
+          echo "demo_url=$DEMO_URL" >> "$GITHUB_OUTPUT"
+          echo "jwt_secret=$JWT_SECRET" >> "$GITHUB_OUTPUT"
+
+      - name: Seed admin user
+        run: |
+          DEMO_URL="${{ steps.deploy.outputs.demo_url }}"
+          echo "Registering admin user..."
+          curl -s -X POST "${DEMO_URL}/api/auth/register" \
+            -H "Content-Type: application/json" \
+            -d '{"username":"admin","password":"${{ inputs.admin_password }}"}'
+          echo ""
+          echo "Admin user created (first user = auto-approved admin)"
+
+      - name: Print demo info
+        run: |
+          echo "============================================"
+          echo "  🚀 DEMO ENVIRONMENT READY"
+          echo "============================================"
+          echo ""
+          echo "  URL:      ${{ steps.deploy.outputs.demo_url }}"
+          echo "  Username: admin"
+          echo "  Duration: ${{ inputs.duration }} minutes"
+          echo "  Demo ID:  ${{ steps.resources.outputs.demo_id }}"
+          echo ""
+          echo "  NOTE: Home agent is not connected."
+          echo "  Upload (≤25MB) and browse work via Cloudflare."
+          echo "============================================"
+
+      - name: Wait for demo duration
+        run: |
+          echo "Demo running for ${{ inputs.duration }} minutes..."
+          sleep $(( ${{ inputs.duration }} * 60 ))
+
+      - name: Teardown demo
+        if: always()
+        run: |
+          cd worker
+          DEMO_ID="${{ steps.resources.outputs.demo_id }}"
+          echo "Tearing down demo..."
+
+          # Delete worker
+          npx wrangler delete --config wrangler.demo.toml --force 2>&1 || true
+
+          # Delete KV namespace
+          npx wrangler kv namespace delete --namespace-id="${{ steps.resources.outputs.kv_id }}" 2>&1 || true
+
+          # Delete D1 database
+          npx wrangler d1 delete "${DEMO_ID}-db" -y 2>&1 || true
+
+          # Delete R2 bucket (must be empty first)
+          # Note: wrangler doesn't support force-delete non-empty buckets
+          npx wrangler r2 bucket delete "${DEMO_ID}-cache" 2>&1 || true
+
+          echo "Demo teardown complete."
