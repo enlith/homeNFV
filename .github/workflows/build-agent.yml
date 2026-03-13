@@ -19,7 +19,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22"
-          cache-dependency-path: agent/go.sum
+      - run: go mod download
       - name: Build
         run: go build -ldflags="-s -w" -o ../dist/homenfv-agent ./cmd/agent/
       - name: Upload artifact
