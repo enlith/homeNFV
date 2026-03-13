@@ -9,8 +9,8 @@ on:
 
 jobs:
   build:
-    name: Build ARM64 Binary
-    runs-on: ubuntu-latest
+    name: Build ARM64 Binary (native)
+    runs-on: ubuntu-24.04-arm
     defaults:
       run:
         working-directory: agent
@@ -20,8 +20,8 @@ jobs:
         with:
           go-version: "1.22"
           cache-dependency-path: agent/go.sum
-      - name: Build for ARM64
-        run: GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o ../dist/homenfv-agent ./cmd/agent/
+      - name: Build
+        run: go build -ldflags="-s -w" -o ../dist/homenfv-agent ./cmd/agent/
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
