@@ -52,6 +52,8 @@ export async function handleBrowse(filePath: string, env: Env): Promise<Response
 export async function handleDownload(filePath: string, env: Env, request?: Request): Promise<Response> {
   const r2Key = `cache/${filePath}`;
   const rangeHeader = request?.headers.get("Range") || undefined;
+  const fileName = filePath.split("/").pop() || "download";
+  const disposition = `attachment; filename="${fileName}"`;
 
   // Check R2 cache first
   const r2Opts: R2GetOptions = rangeHeader ? { range: { suffix: 0 } } : {};
@@ -61,7 +63,7 @@ export async function handleDownload(filePath: string, env: Env, request?: Reque
   }
   const cached = await env.R2.get(r2Key, r2Opts);
   if (cached) {
-    const headers: Record<string, string> = { "Content-Type": cached.httpMetadata?.contentType || "application/octet-stream", "Accept-Ranges": "bytes" };
+    const headers: Record<string, string> = { "Content-Type": cached.httpMetadata?.contentType || "application/octet-stream", "Accept-Ranges": "bytes", "Content-Disposition": disposition };
     const status = rangeHeader && "range" in cached ? 206 : 200;
     return new Response(cached.body, { status, headers });
   }
@@ -72,7 +74,7 @@ export async function handleDownload(filePath: string, env: Env, request?: Reque
   const agentResp = await agentFetch(env, "GET", `/api/files?path=${encodeURIComponent(filePath)}`, null, extra);
   if (agentResp && (agentResp.ok || agentResp.status === 206)) {
     const contentType = agentResp.headers.get("Content-Type") || "application/octet-stream";
-    const respHeaders: Record<string, string> = { "Content-Type": contentType, "Accept-Ranges": "bytes" };
+    const respHeaders: Record<string, string> = { "Content-Type": contentType, "Accept-Ranges": "bytes", "Content-Disposition": disposition };
     const cr = agentResp.headers.get("Content-Range");
     if (cr) respHeaders["Content-Range"] = cr;
     const cl = agentResp.headers.get("Content-Length");
@@ -95,7 +97,7 @@ export async function handleDownload(filePath: string, env: Env, request?: Reque
   // Check R2 temp storage
   const temp = await env.R2.get(`temp/${filePath}`, r2Opts);
   if (temp) {
-    const headers: Record<string, string> = { "Content-Type": temp.httpMetadata?.contentType || "application/octet-stream", "Accept-Ranges": "bytes" };
+    const headers: Record<string, string> = { "Content-Type": temp.httpMetadata?.contentType || "application/octet-stream", "Accept-Ranges": "bytes", "Content-Disposition": disposition };
     const status = rangeHeader && "range" in temp ? 206 : 200;
     return new Response(temp.body, { status, headers });
   }
