@@ -13,6 +13,7 @@ interface Env {
   AGENT_URL: string;
   AGENT_SHARED_SECRET: string;
   JWT_SECRET: string;
+  DISABLE_REGISTRATION?: string;
 }
 
 async function verifyAgentAuth(req: Request, env: Env): Promise<boolean> {
@@ -97,6 +98,7 @@ export default {
     }
 
     if (pathname === "/register") {
+      if (env.DISABLE_REGISTRATION === "true") return html(registerPage("Registration is disabled"));
       if (method === "POST") {
         const form = await request.formData();
         const username = form.get("username") as string;
@@ -115,7 +117,10 @@ export default {
     }
 
     // --- JSON API routes (no auth required) ---
-    if (pathname === "/api/auth/register" && method === "POST") return handleRegister(request, env);
+    if (pathname === "/api/auth/register" && method === "POST") {
+      if (env.DISABLE_REGISTRATION === "true") return Response.json({ error: "Registration disabled" }, { status: 403 });
+      return handleRegister(request, env);
+    }
     if (pathname === "/api/auth/login" && method === "POST") return handleLogin(request, env);
     if (pathname === "/api/auth/logout" && method === "POST") return handleLogout();
 
