@@ -32,34 +32,40 @@ func (h *FileHandler) FetchURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Respond immediately, download in background
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(map[string]interface{}{"status": "downloading"})
 
-	go func() {
-		resp, err := http.Get(req.URL)
-		if err != nil {
-			log.Printf("fetch-url: failed to fetch %s: %v", req.URL, err)
-			return
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode >= 400 {
-			log.Printf("fetch-url: %s returned %d", req.URL, resp.StatusCode)
-			return
-		}
-		f, err := os.Create(fullPath)
-		if err != nil {
-			log.Printf("fetch-url: cannot create %s: %v", fullPath, err)
-			return
-		}
-		defer f.Close()
-		written, err := io.Copy(f, resp.Body)
-		if err != nil {
-			os.Remove(fullPath)
-			log.Printf("fetch-url: write failed for %s: %v", fullPath, err)
-			return
-		}
-		log.Printf("fetch-url: saved %s (%d bytes)", clean, written)
-	}()
+	if isPeerLink(req.URL) {
+		destDir := filepath.Dir(fullPath)
+		go h.peerFetch(req.URL, destDir)
+	} else {
+		go h.httpFetch(req.URL, fullPath, clean)
+	}
+}
+
+func (h *FileHandler) httpFetch(url, fullPath, clean string) {
+	resp, err := http.Get(url)
+	if err != nil {
+		log.Printf("fetch-url: failed to fetch %s: %v", url, err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		log.Printf("fetch-url: %s returned %d", url, resp.StatusCode)
+		return
+	}
+	f, err := os.Create(fullPath)
+	if err != nil {
+		log.Printf("fetch-url: cannot create %s: %v", fullPath, err)
+		return
+	}
+	defer f.Close()
+	written, err := io.Copy(f, resp.Body)
+	if err != nil {
+		os.Remove(fullPath)
+		log.Printf("fetch-url: write failed for %s: %v", fullPath, err)
+		return
+	}
+	log.Printf("fetch-url: saved %s (%d bytes)", clean, written)
 }
