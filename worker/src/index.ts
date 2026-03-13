@@ -127,7 +127,7 @@ export default {
 
     // --- Public share download (no auth) ---
     const shareMatch = pathname.match(/^\/s\/([a-f0-9]{16})$/);
-    if (shareMatch) return handleShareDownload(shareMatch[1], env);
+    if (shareMatch) return handleShareDownload(shareMatch[1], request, env);
 
     // Pages below require auth
     if (!ctx) return redirect("/login");
@@ -177,7 +177,7 @@ export default {
       const err = requireAuth(ctx);
       if (err) return err;
       const filePath = url.searchParams.get("path") || "/";
-      if (method === "GET" && url.searchParams.get("download") === "true") return handleDownload(filePath, env);
+      if (method === "GET" && url.searchParams.get("download") === "true") return handleDownload(filePath, env, request);
       if (method === "GET") return handleBrowse(filePath, env);
       if (method === "PUT") return handleUpload(filePath, request, env);
       if (method === "DELETE") return handleDelete(filePath, env);
