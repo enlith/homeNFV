@@ -40,7 +40,9 @@ func (h *FileHandler) peerFetch(uri, destDir string) {
 	cfg.DataDir = destDir
 	cfg.DefaultStorage = storage.NewFile(destDir)
 	cfg.Seed = false
+	cfg.NoUpload = true
 	cfg.ListenPort = 0
+	cfg.DisableAcceptRateLimiting = true
 
 	client, err := torrent.NewClient(cfg)
 	if err != nil {
