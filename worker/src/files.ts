@@ -1,0 +1,169 @@
+import { signRequest } from "./agent-auth";
+
+interface Env {
+  KV: KVNamespace;
+  R2: R2Bucket;
+  DB: D1Database;
+  AGENT_URL: string;
+  AGENT_SHARED_SECRET: string;
+}
+
+const MAX_TEMP_SIZE = 25 * 1024 * 1024; // 25MB
+
+// Proxy a request to the home agent with HMAC auth
+async function agentFetch(env: Env, method: string, agentPath: string, body?: ReadableStream | null): Promise<Response | null> {
+  const { timestamp, signature } = await signRequest(method, agentPath, env.AGENT_SHARED_SECRET);
+  try {
+    const resp = await fetch(`${env.AGENT_URL}${agentPath}`, {
+      method,
+      headers: {
+        "X-HomeNFV-Timestamp": timestamp,
+        "X-HomeNFV-Signature": signature,
+      },
+      body,
+    });
+    return resp;
+  } catch {
+    return null; // Agent unreachable
+  }
+}
+
+// Browse directory
+export async function handleBrowse(filePath: string, env: Env): Promise<Response> {
+  // Try agent first
+  const agentResp = await agentFetch(env, "GET", `/api/files?path=${encodeURIComponent(filePath)}`);
+  if (agentResp?.ok) {
+    // Update D1 metadata from agent response
+    const data = await agentResp.json() as { files: Array<{ name: string; is_dir: boolean; size: number; modified: number }> };
+    await syncDirMetadata(env, filePath, data.files);
+    return json(data);
+  }
+
+  // Fallback: serve from D1 metadata
+  const rows = await env.DB.prepare("SELECT name, is_dir, size, modified FROM files WHERE parent = ?").bind(filePath).all();
+  return json({
+    path: filePath,
+    files: rows.results.map((r: any) => ({ name: r.name, is_dir: !!r.is_dir, size: r.size, modified: r.modified })),
+    offline: true,
+  });
+}
+
+// Download file
+export async function handleDownload(filePath: string, env: Env): Promise<Response> {
+  const r2Key = `cache/${filePath}`;
+
+  // Check R2 cache first
+  const cached = await env.R2.get(r2Key);
+  if (cached) {
+    return new Response(cached.body, {
+      headers: { "Content-Type": cached.httpMetadata?.contentType || "application/octet-stream" },
+    });
+  }
+
+  // Try agent
+  const agentResp = await agentFetch(env, "GET", `/api/files?path=${encodeURIComponent(filePath)}`);
+  if (agentResp?.ok) {
+    const contentType = agentResp.headers.get("Content-Type") || "application/octet-stream";
+    const [stream1, stream2] = agentResp.body!.tee();
+
+    // Cache in R2 in background
+    const size = parseInt(agentResp.headers.get("X-File-Size") || "0");
+    if (size > 0 && size <= MAX_TEMP_SIZE) {
+      // Use waitUntil if available, otherwise just cache inline
+      env.R2.put(r2Key, stream2, { httpMetadata: { contentType } }).catch(() => {});
+      await updateFileMetadata(env, filePath, { cached_in_r2: 1 });
+    }
+
+    return new Response(stream1, { headers: { "Content-Type": contentType } });
+  }
+
+  // Check R2 temp storage (pending sync files)
+  const temp = await env.R2.get(`temp/${filePath}`);
+  if (temp) {
+    return new Response(temp.body, {
+      headers: { "Content-Type": temp.httpMetadata?.contentType || "application/octet-stream" },
+    });
+  }
+
+  return json({ error: "File unavailable — home server offline and not cached" }, 503);
+}
+
+// Upload file
+export async function handleUpload(filePath: string, request: Request, env: Env): Promise<Response> {
+  const contentLength = parseInt(request.headers.get("Content-Length") || "0");
+  const contentType = request.headers.get("Content-Type") || "application/octet-stream";
+
+  // Try agent first
+  const agentResp = await agentFetch(env, "PUT", `/api/files?path=${encodeURIComponent(filePath)}`, request.body);
+  if (agentResp?.ok) {
+    await updateFileMetadata(env, filePath, { size: contentLength, pending_sync: 0 });
+    return json({ status: "uploaded" }, 201);
+  }
+
+  // Agent offline — store in R2 temp if within size limit
+  if (contentLength > MAX_TEMP_SIZE) {
+    return json({ error: `Home offline. File too large for temp storage (max ${MAX_TEMP_SIZE / 1024 / 1024}MB)` }, 413);
+  }
+
+  await env.R2.put(`temp/${filePath}`, request.body, { httpMetadata: { contentType } });
+  await updateFileMetadata(env, filePath, { size: contentLength, pending_sync: 1 });
+
+  return json({ status: "queued", message: "Home offline — file queued for sync" }, 202);
+}
+
+// Delete file
+export async function handleDelete(filePath: string, env: Env): Promise<Response> {
+  const agentResp = await agentFetch(env, "DELETE", `/api/files?path=${encodeURIComponent(filePath)}`);
+  if (!agentResp?.ok) {
+    return json({ error: "Cannot delete — home server offline" }, 503);
+  }
+
+  // Clean up R2 and D1
+  await env.R2.delete(`cache/${filePath}`);
+  await env.R2.delete(`temp/${filePath}`);
+  await env.DB.prepare("DELETE FROM files WHERE path = ?").bind(filePath).run();
+
+  return json({ status: "deleted" });
+}
+
+// Create directory
+export async function handleMkdir(filePath: string, env: Env): Promise<Response> {
+  const agentResp = await agentFetch(env, "POST", `/api/mkdir?path=${encodeURIComponent(filePath)}`);
+  if (!agentResp?.ok) {
+    return json({ error: "Cannot create directory — home server offline" }, 503);
+  }
+
+  const parent = filePath.substring(0, filePath.lastIndexOf("/")) || "/";
+  const name = filePath.substring(filePath.lastIndexOf("/") + 1);
+  await env.DB.prepare(
+    "INSERT OR REPLACE INTO files (path, parent, name, is_dir, size, modified) VALUES (?, ?, ?, 1, 0, ?)"
+  ).bind(filePath, parent, name, Math.floor(Date.now() / 1000)).run();
+
+  return json({ status: "created" }, 201);
+}
+
+// Sync directory listing from agent into D1
+async function syncDirMetadata(env: Env, dirPath: string, files: Array<{ name: string; is_dir: boolean; size: number; modified: number }>) {
+  const stmts = files.map((f) => {
+    const path = dirPath === "/" ? `/${f.name}` : `${dirPath}/${f.name}`;
+    return env.DB.prepare(
+      "INSERT OR REPLACE INTO files (path, parent, name, is_dir, size, modified) VALUES (?, ?, ?, ?, ?, ?)"
+    ).bind(path, dirPath, f.name, f.is_dir ? 1 : 0, f.size, f.modified);
+  });
+  if (stmts.length > 0) await env.DB.batch(stmts);
+}
+
+async function updateFileMetadata(env: Env, filePath: string, updates: Record<string, unknown>) {
+  const parent = filePath.substring(0, filePath.lastIndexOf("/")) || "/";
+  const name = filePath.substring(filePath.lastIndexOf("/") + 1);
+  const cols = Object.keys(updates);
+  const sets = cols.map((c) => `${c} = ?`).join(", ");
+  await env.DB.prepare(
+    `INSERT INTO files (path, parent, name, ${cols.join(", ")}) VALUES (?, ?, ?, ${cols.map(() => "?").join(", ")})
+     ON CONFLICT(path) DO UPDATE SET ${sets}`
+  ).bind(filePath, parent, name, ...cols.map((c) => updates[c]), ...cols.map((c) => updates[c])).run();
+}
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+}

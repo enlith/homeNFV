@@ -1,5 +1,6 @@
 import { handleRegister, handleLogin, handleLogout } from "./auth";
 import { handleListUsers, handleApproveUser, handleRejectUser } from "./admin";
+import { handleBrowse, handleDownload, handleUpload, handleDelete, handleMkdir } from "./files";
 import { authenticate, requireAuth, requireAdmin } from "./middleware";
 
 interface Env {
@@ -60,7 +61,28 @@ export default {
       return handleRejectUser(rejectMatch[1], env);
     }
 
-    // TODO: file routes (next step)
+    // File routes (auth required)
+    if (pathname.startsWith("/api/files")) {
+      const err = requireAuth(ctx);
+      if (err) return err;
+
+      const filePath = url.searchParams.get("path") || "/";
+
+      if (method === "GET" && url.searchParams.get("download") === "true") {
+        return handleDownload(filePath, env);
+      }
+      if (method === "GET") return handleBrowse(filePath, env);
+      if (method === "PUT") return handleUpload(filePath, request, env);
+      if (method === "DELETE") return handleDelete(filePath, env);
+    }
+
+    if (pathname === "/api/mkdir" && method === "POST") {
+      const err = requireAuth(ctx);
+      if (err) return err;
+      const filePath = url.searchParams.get("path");
+      if (!filePath) return new Response(JSON.stringify({ error: "path required" }), { status: 400, headers: { "Content-Type": "application/json" } });
+      return handleMkdir(filePath, env);
+    }
 
     return new Response(JSON.stringify({ error: "Not found" }), {
       status: 404,
