@@ -11,6 +11,8 @@ on:
         options:
           - "30"
           - "60"
+          - "180"
+          - "300"
       admin_username:
         description: "Admin username"
         required: true
@@ -30,6 +32,7 @@ jobs:
   deploy-demo:
     name: Deploy Demo
     runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(inputs.duration) + 15 }}
     environment: demo
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -80,15 +83,17 @@ jobs:
 
       - name: Apply D1 schema
         run: |
-          SQL=$(cat worker/migrations/0001_init.sql)
-          PAYLOAD=$(jq -n --arg sql "$SQL" '{sql: $sql}')
-          curl -sf -X POST \
-            "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/d1/database/${{ steps.resources.outputs.d1_id }}/query" \
-            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" \
-            -H "Content-Type: application/json" \
-            -d "$PAYLOAD"
-          echo ""
-          echo "D1 schema applied"
+          for f in worker/migrations/*.sql; do
+            SQL=$(cat "$f")
+            PAYLOAD=$(jq -n --arg sql "$SQL" '{sql: $sql}')
+            curl -sf -X POST \
+              "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/d1/database/${{ steps.resources.outputs.d1_id }}/query" \
+              -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              -d "$PAYLOAD"
+            echo ""
+            echo "Applied: $f"
+          done
 
       # --- Build and start agent ---
       - name: Build agent
