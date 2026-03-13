@@ -17,7 +17,6 @@ func isPeerLink(url string) bool {
 	if strings.HasPrefix(url, "magnet:") {
 		return true
 	}
-	// Strip query string before checking extension
 	path := url
 	if i := strings.Index(path, "?"); i != -1 {
 		path = path[:i]
@@ -26,7 +25,7 @@ func isPeerLink(url string) bool {
 }
 
 func (h *FileHandler) peerFetch(uri, destDir string) {
-	// Use temp dir for client state DB to avoid littering destDir
+	// Temp dir for client state (DB files etc)
 	stateDir, err := os.MkdirTemp("", "homenfv-p2p-*")
 	if err != nil {
 		log.Printf("p2p: cannot create state dir: %v", err)
@@ -35,12 +34,11 @@ func (h *FileHandler) peerFetch(uri, destDir string) {
 	defer os.RemoveAll(stateDir)
 
 	cfg := torrent.NewDefaultClientConfig()
-	cfg.DataDir = destDir
-	cfg.DefaultStorage = storage.NewFileByInfoHash(destDir)
+	cfg.DataDir = stateDir
+	cfg.DefaultStorage = storage.NewFile(destDir)
 	cfg.Seed = false
 	cfg.NoDHT = false
 	cfg.ListenPort = 0
-	cfg.ConfigDir = stateDir
 
 	client, err := torrent.NewClient(cfg)
 	if err != nil {
@@ -53,7 +51,6 @@ func (h *FileHandler) peerFetch(uri, destDir string) {
 	if strings.HasPrefix(uri, "magnet:") {
 		t, err = client.AddMagnet(uri)
 	} else if strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") {
-		// Download .torrent file first
 		tmp, dlErr := os.CreateTemp("", "homenfv-*.torrent")
 		if dlErr != nil {
 			log.Printf("p2p: cannot create temp file: %v", dlErr)
@@ -98,21 +95,6 @@ func (h *FileHandler) peerFetch(uri, destDir string) {
 		log.Printf("p2p: download incomplete")
 		return
 	}
-
-	// Move files from hash-based storage to destination
-	info := t.Info()
-	srcBase := filepath.Join(destDir, t.InfoHash().HexString())
-	for _, f := range info.UpvertedFiles() {
-		dp := f.DisplayPath(info)
-		src := filepath.Join(srcBase, dp)
-		dst := filepath.Join(destDir, dp)
-		if src == dst {
-			continue
-		}
-		os.MkdirAll(filepath.Dir(dst), 0755)
-		os.Rename(src, dst)
-	}
-	os.RemoveAll(srcBase)
 
 	log.Printf("p2p: completed %q", t.Name())
 }
