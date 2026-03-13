@@ -27,6 +27,7 @@ th{font-weight:600;font-size:13px;color:#666}
 .file-icon{margin-right:6px}
 .share-btn{background:none;border:none;cursor:pointer;font-size:14px;padding:2px 6px;opacity:0.5}
 .share-btn:hover{opacity:1}
+.sel{vertical-align:middle;margin-right:6px}
 .breadcrumb{margin-bottom:12px;font-size:14px;color:#666}
 .breadcrumb a{margin:0 4px}
 .actions{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center}
