@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,7 +14,15 @@ import (
 )
 
 func isPeerLink(url string) bool {
-	return strings.HasPrefix(url, "magnet:") || strings.HasSuffix(strings.ToLower(url), ".torrent")
+	if strings.HasPrefix(url, "magnet:") {
+		return true
+	}
+	// Strip query string before checking extension
+	path := url
+	if i := strings.Index(path, "?"); i != -1 {
+		path = path[:i]
+	}
+	return strings.HasSuffix(strings.ToLower(path), ".torrent")
 }
 
 func (h *FileHandler) peerFetch(uri, destDir string) {
@@ -33,6 +43,30 @@ func (h *FileHandler) peerFetch(uri, destDir string) {
 	var t *torrent.Torrent
 	if strings.HasPrefix(uri, "magnet:") {
 		t, err = client.AddMagnet(uri)
+	} else if strings.HasPrefix(uri, "http://") || strings.HasPrefix(uri, "https://") {
+		// Download .torrent file first
+		tmp, dlErr := os.CreateTemp("", "homenfv-*.torrent")
+		if dlErr != nil {
+			log.Printf("p2p: cannot create temp file: %v", dlErr)
+			return
+		}
+		tmpPath := tmp.Name()
+		defer os.Remove(tmpPath)
+
+		resp, dlErr := http.Get(uri)
+		if dlErr != nil {
+			tmp.Close()
+			log.Printf("p2p: failed to download descriptor: %v", dlErr)
+			return
+		}
+		_, dlErr = io.Copy(tmp, resp.Body)
+		resp.Body.Close()
+		tmp.Close()
+		if dlErr != nil {
+			log.Printf("p2p: failed to write descriptor: %v", dlErr)
+			return
+		}
+		t, err = client.AddTorrentFromFile(tmpPath)
 	} else {
 		t, err = client.AddTorrentFromFile(uri)
 	}
