@@ -198,6 +198,7 @@ jobs:
       # --- Seed admin and start sync loop ---
       - name: Seed admin user
         run: |
+          echo "::add-mask::${{ inputs.admin_password }}"
           cd worker
           DEMO_URL="${{ steps.deploy.outputs.demo_url }}"
           KV_ID="${{ steps.resources.outputs.kv_id }}"
@@ -218,7 +219,6 @@ jobs:
           # Register admin via API
           PAYLOAD=$(jq -n --arg u "${{ inputs.admin_username }}" --arg p "${{ inputs.admin_password }}" \
             '{username: $u, password: $p}')
-          echo "Registering with payload: $PAYLOAD"
 
           HTTP_CODE=$(curl -s -o /tmp/register_response.txt -w "%{http_code}" \
             -X POST "${DEMO_URL}/api/auth/register" \
