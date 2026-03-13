@@ -30,6 +30,8 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v4
+
+      # --- Setup tools ---
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -37,6 +39,16 @@ jobs:
           cache-dependency-path: worker/package-lock.json
       - run: cd worker && npm ci
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Install cloudflared
+        run: |
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
+          sudo dpkg -i cloudflared.deb
+
+      # --- Create Cloudflare resources ---
       - name: Create demo resources
         id: resources
         run: |
@@ -63,19 +75,72 @@ jobs:
       - name: Apply D1 schema
         run: |
           cd worker
-          # Apply migration directly
           npx wrangler d1 execute "${{ steps.resources.outputs.demo_id }}-db" \
             --remote --file=migrations/0001_init.sql
 
+      # --- Build and start agent ---
+      - name: Build agent
+        run: cd agent && go build -o homenfv-agent ./cmd/agent/
+
+      - name: Start agent
+        id: agent
+        run: |
+          AGENT_SECRET=$(openssl rand -hex 32)
+          echo "agent_secret=$AGENT_SECRET" >> "$GITHUB_OUTPUT"
+
+          STORAGE_ROOT=$(mktemp -d)
+          echo "storage_root=$STORAGE_ROOT" >> "$GITHUB_OUTPUT"
+
+          export HOMENFV_LISTEN_ADDR=127.0.0.1:8787
+          export HOMENFV_SHARED_SECRET=$AGENT_SECRET
+          export HOMENFV_STORAGE_ROOT=$STORAGE_ROOT
+          cd agent && ./homenfv-agent &
+
+          # Wait for agent to be ready
+          for i in $(seq 1 10); do
+            if curl -sf http://127.0.0.1:8787/health > /dev/null 2>&1; then
+              echo "Agent is ready"
+              break
+            fi
+            sleep 1
+          done
+
+      # --- Start cloudflared tunnel to expose agent ---
+      - name: Start tunnel
+        id: tunnel
+        run: |
+          # Use cloudflared quick tunnel (no account needed, gives a trycloudflare.com URL)
+          cloudflared tunnel --url http://127.0.0.1:8787 --no-autoupdate > /tmp/cloudflared.log 2>&1 &
+          TUNNEL_PID=$!
+          echo "tunnel_pid=$TUNNEL_PID" >> "$GITHUB_OUTPUT"
+
+          # Wait for tunnel URL
+          for i in $(seq 1 30); do
+            TUNNEL_URL=$(grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cloudflared.log | head -1)
+            if [ -n "$TUNNEL_URL" ]; then
+              echo "Tunnel URL: $TUNNEL_URL"
+              echo "tunnel_url=$TUNNEL_URL" >> "$GITHUB_OUTPUT"
+              break
+            fi
+            sleep 2
+          done
+
+          if [ -z "$TUNNEL_URL" ]; then
+            echo "Failed to get tunnel URL"
+            cat /tmp/cloudflared.log
+            exit 1
+          fi
+
+      # --- Deploy Worker pointing to tunnel ---
       - name: Generate demo wrangler.toml
         run: |
-          cat > worker/wrangler.demo.toml << 'EOF'
+          cat > worker/wrangler.demo.toml << EOF
           name = "homenfv-demo-${{ steps.resources.outputs.demo_id }}"
           main = "src/index.ts"
           compatibility_date = "2024-12-01"
 
           [vars]
-          AGENT_URL = "http://localhost:9999"
+          AGENT_URL = "${{ steps.tunnel.outputs.tunnel_url }}"
 
           [[kv_namespaces]]
           binding = "KV"
@@ -95,30 +160,52 @@ jobs:
         id: deploy
         run: |
           cd worker
-          # Generate temp secrets
           JWT_SECRET=$(openssl rand -hex 32)
-          AGENT_SECRET=$(openssl rand -hex 32)
 
           DEPLOY_OUT=$(npx wrangler deploy \
             --config wrangler.demo.toml \
             --var JWT_SECRET:${JWT_SECRET} \
-            --var AGENT_SHARED_SECRET:${AGENT_SECRET} 2>&1)
+            --var AGENT_SHARED_SECRET:${{ steps.agent.outputs.agent_secret }} 2>&1)
           echo "$DEPLOY_OUT"
 
-          # Extract the workers.dev URL
           DEMO_URL=$(echo "$DEPLOY_OUT" | grep -oP 'https://[^\s]+\.workers\.dev')
           echo "demo_url=$DEMO_URL" >> "$GITHUB_OUTPUT"
-          echo "jwt_secret=$JWT_SECRET" >> "$GITHUB_OUTPUT"
 
+      # --- Seed admin and start sync loop ---
       - name: Seed admin user
         run: |
           DEMO_URL="${{ steps.deploy.outputs.demo_url }}"
-          echo "Registering admin user..."
-          curl -s -X POST "${DEMO_URL}/api/auth/register" \
+
+          # Wait for Worker to be reachable
+          for i in $(seq 1 15); do
+            if curl -sf "${DEMO_URL}/api/health" > /dev/null 2>&1; then
+              echo "Worker is ready"
+              break
+            fi
+            sleep 2
+          done
+
+          # Register admin (use jq to safely build JSON)
+          PAYLOAD=$(jq -n --arg u "${{ inputs.admin_username }}" --arg p "${{ inputs.admin_password }}" \
+            '{username: $u, password: $p}')
+          RESULT=$(curl -s -X POST "${DEMO_URL}/api/auth/register" \
             -H "Content-Type: application/json" \
-            -d '{"username":"${{ inputs.admin_username }}","password":"${{ inputs.admin_password }}"}'
-          echo ""
-          echo "Admin user created (first user = auto-approved admin)"
+            -d "$PAYLOAD")
+          echo "Register result: $RESULT"
+
+      - name: Start agent sync loop
+        run: |
+          # Set worker URL for sync and restart agent with it
+          kill $(pgrep homenfv-agent) 2>/dev/null || true
+          sleep 1
+
+          export HOMENFV_LISTEN_ADDR=127.0.0.1:8787
+          export HOMENFV_SHARED_SECRET=${{ steps.agent.outputs.agent_secret }}
+          export HOMENFV_STORAGE_ROOT=${{ steps.agent.outputs.storage_root }}
+          export HOMENFV_WORKER_URL=${{ steps.deploy.outputs.demo_url }}
+          cd agent && ./homenfv-agent &
+          sleep 2
+          echo "Agent restarted with sync loop"
 
       - name: Print demo info
         run: |
@@ -130,9 +217,10 @@ jobs:
           echo "  Username: ${{ inputs.admin_username }}"
           echo "  Duration: ${{ inputs.duration }} minutes"
           echo "  Demo ID:  ${{ steps.resources.outputs.demo_id }}"
+          echo "  Agent:    Running on GitHub runner via tunnel"
           echo ""
-          echo "  NOTE: Home agent is not connected."
-          echo "  Upload (≤25MB) and browse work via Cloudflare."
+          echo "  Full functionality — upload, browse, download,"
+          echo "  sync, and caching all active."
           echo "============================================"
 
       - name: Wait for demo duration
@@ -140,6 +228,7 @@ jobs:
           echo "Demo running for ${{ inputs.duration }} minutes..."
           sleep $(( ${{ inputs.duration }} * 60 ))
 
+      # --- Teardown (runs on finish, cancel, or failure) ---
       - name: Teardown demo
         if: always()
         run: |
@@ -147,17 +236,34 @@ jobs:
           DEMO_ID="${{ steps.resources.outputs.demo_id }}"
           echo "Tearing down demo..."
 
+          # Stop agent and tunnel
+          kill $(pgrep homenfv-agent) 2>/dev/null || true
+          kill ${{ steps.tunnel.outputs.tunnel_pid }} 2>/dev/null || true
+
           # Delete worker
-          npx wrangler delete --config wrangler.demo.toml --force 2>&1 || true
+          if [ -f wrangler.demo.toml ]; then
+            npx wrangler delete --config wrangler.demo.toml --force 2>&1 || true
+          fi
 
           # Delete KV namespace
-          npx wrangler kv namespace delete --namespace-id="${{ steps.resources.outputs.kv_id }}" 2>&1 || true
+          KV_ID="${{ steps.resources.outputs.kv_id }}"
+          if [ -n "$KV_ID" ]; then
+            npx wrangler kv namespace delete --namespace-id="$KV_ID" 2>&1 || true
+          fi
 
           # Delete D1 database
-          npx wrangler d1 delete "${DEMO_ID}-db" -y 2>&1 || true
+          if [ -n "$DEMO_ID" ]; then
+            npx wrangler d1 delete "${DEMO_ID}-db" -y 2>&1 || true
+          fi
 
-          # Delete R2 bucket (must be empty first)
-          # Note: wrangler doesn't support force-delete non-empty buckets
-          npx wrangler r2 bucket delete "${DEMO_ID}-cache" 2>&1 || true
+          # Empty and delete R2 bucket
+          if [ -n "$DEMO_ID" ]; then
+            # List and delete all objects first
+            OBJECTS=$(npx wrangler r2 object list "${DEMO_ID}-cache" 2>&1 | grep -oP '"key"\s*:\s*"\K[^"]+' || true)
+            for obj in $OBJECTS; do
+              npx wrangler r2 object delete "${DEMO_ID}-cache/$obj" 2>&1 || true
+            done
+            npx wrangler r2 bucket delete "${DEMO_ID}-cache" 2>&1 || true
+          fi
 
-          echo "Demo teardown complete."
+          echo "Demo teardown complete — all Cloudflare resources deleted."
