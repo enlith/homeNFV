@@ -1,3 +1,4 @@
+import { handleCreateShare, handleShareDownload } from "./shares";
 import { handleRegister, handleLogin, handleLogout } from "./auth";
 import { handleListUsers, handleApproveUser, handleRejectUser } from "./admin";
 import { handleBrowse, handleDownload, handleUpload, handleDelete, handleMkdir, handleUploadFromURL } from "./files";
@@ -124,6 +125,10 @@ export default {
     if (pathname === "/api/auth/login" && method === "POST") return handleLogin(request, env);
     if (pathname === "/api/auth/logout" && method === "POST") return handleLogout();
 
+    // --- Public share download (no auth) ---
+    const shareMatch = pathname.match(/^\/s\/([a-f0-9]{16})$/);
+    if (shareMatch) return handleShareDownload(shareMatch[1], env);
+
     // Pages below require auth
     if (!ctx) return redirect("/login");
     const user = { username: ctx.username, role: ctx.role };
@@ -192,6 +197,14 @@ export default {
       const body = await request.json<{ url: string; path: string }>();
       if (!body.url || !body.path) return Response.json({ error: "url and path required" }, { status: 400 });
       return handleUploadFromURL(body.path, body.url, env);
+    }
+
+    if (pathname === "/api/share" && method === "POST") {
+      const err = requireAuth(ctx);
+      if (err) return err;
+      const body = await request.json<{ path: string }>();
+      if (!body.path) return Response.json({ error: "path required" }, { status: 400 });
+      return handleCreateShare(body.path, ctx!.username, env);
     }
 
     return Response.json({ error: "Not found" }, { status: 404 });
