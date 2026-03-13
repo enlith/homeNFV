@@ -109,8 +109,8 @@ export function browsePage(
         : `/api/files?path=${encodeURIComponent(filePath)}&download=true`;
       const size = f.is_dir ? "—" : formatSize(f.size);
       const modified = f.modified ? new Date(f.modified * 1000).toLocaleString() : "—";
-      return `<tr class="file-row" onclick="location='${link}'">
-        <td><span class="file-icon">${icon}</span>${f.name}</td>
+      return `<tr class="file-row">
+        <td><input type="checkbox" class="sel" value="${filePath}" onclick="event.stopPropagation();toggleDel()"><a href="${link}"><span class="file-icon">${icon}</span>${f.name}</a></td>
         <td class="size">${size}</td>
         <td class="size">${modified}</td>
       </tr>`;
@@ -125,6 +125,7 @@ export function browsePage(
         <button onclick="document.getElementById('upload').click()">⬆ Upload</button>
         <button class="secondary" onclick="promptMkdir()">📁 New Folder</button>
         <button class="secondary" onclick="promptUploadURL()">🔗 Upload URL</button>
+        <button class="secondary" id="del-btn" style="display:none;background:#c0392b;color:#fff" onclick="deleteSelected()">🗑 Delete</button>
         <input type="file" id="upload" style="display:none" multiple onchange="uploadFiles(this.files)">
         <span id="upload-status" style="font-size:13px"></span>
       </div>
@@ -177,6 +178,19 @@ export function browsePage(
       if (!resp.ok) { status.textContent = 'Error: ' + data.error; return; }
       status.textContent = 'Done! (' + (data.size ? (data.size/1024/1024).toFixed(1) + 'MB' : '') + ')';
       setTimeout(() => location.reload(), 500);
+    }
+    function toggleDel() {
+      document.getElementById('del-btn').style.display =
+        document.querySelectorAll('.sel:checked').length ? '' : 'none';
+    }
+    async function deleteSelected() {
+      const checked = [...document.querySelectorAll('.sel:checked')];
+      if (!checked.length) return;
+      if (!confirm('Delete ' + checked.length + ' item(s)?')) return;
+      for (const cb of checked) {
+        await fetch('/api/files?path=' + encodeURIComponent(cb.value), { method: 'DELETE' });
+      }
+      location.reload();
     }
     </script>
   `, user);
