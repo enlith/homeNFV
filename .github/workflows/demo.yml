@@ -168,29 +168,44 @@ jobs:
             --var AGENT_SHARED_SECRET:${{ steps.agent.outputs.agent_secret }} 2>&1)
           echo "$DEPLOY_OUT"
 
-          DEMO_URL=$(echo "$DEPLOY_OUT" | grep -oP 'https://[^\s]+\.workers\.dev')
+          # Extract workers.dev URL (try multiple patterns)
+          DEMO_URL=$(echo "$DEPLOY_OUT" | grep -oE 'https://[^ ]+\.workers\.dev' | head -1)
+          if [ -z "$DEMO_URL" ]; then
+            echo "ERROR: Could not extract demo URL from deploy output"
+            exit 1
+          fi
+          echo "Demo URL: $DEMO_URL"
           echo "demo_url=$DEMO_URL" >> "$GITHUB_OUTPUT"
 
       # --- Seed admin and start sync loop ---
       - name: Seed admin user
         run: |
           DEMO_URL="${{ steps.deploy.outputs.demo_url }}"
+          echo "Demo URL: $DEMO_URL"
+
+          if [ -z "$DEMO_URL" ]; then
+            echo "ERROR: No demo URL available, skipping seed"
+            exit 1
+          fi
 
           # Wait for Worker to be reachable
+          echo "Waiting for Worker..."
           for i in $(seq 1 15); do
             if curl -sf "${DEMO_URL}/api/health" > /dev/null 2>&1; then
               echo "Worker is ready"
               break
             fi
+            echo "  attempt $i..."
             sleep 2
           done
 
           # Register admin (use jq to safely build JSON)
           PAYLOAD=$(jq -n --arg u "${{ inputs.admin_username }}" --arg p "${{ inputs.admin_password }}" \
             '{username: $u, password: $p}')
-          RESULT=$(curl -s -X POST "${DEMO_URL}/api/auth/register" \
+          echo "Payload: $PAYLOAD"
+          RESULT=$(curl -sv -X POST "${DEMO_URL}/api/auth/register" \
             -H "Content-Type: application/json" \
-            -d "$PAYLOAD")
+            -d "$PAYLOAD" 2>&1)
           echo "Register result: $RESULT"
 
       - name: Start agent sync loop
