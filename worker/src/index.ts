@@ -3,6 +3,7 @@ import { handleListUsers, handleApproveUser, handleRejectUser } from "./admin";
 import { handleBrowse, handleDownload, handleUpload, handleDelete, handleMkdir } from "./files";
 import { handlePendingList, handlePendingDownload, handlePendingAck, handleMetadataPush, handleMetadataDelete } from "./sync";
 import { authenticate, requireAuth, requireAdmin, type AuthContext } from "./middleware";
+import { checkRequestAllowed } from "./quota";
 import { loginPage, registerPage, browsePage, adminPage } from "./views";
 
 interface Env {
@@ -45,6 +46,11 @@ export default {
     // --- Health ---
     if (pathname === "/api/health") {
       return Response.json({ status: "ok" });
+    }
+
+    // --- Rate limit ---
+    if (!(await checkRequestAllowed(env))) {
+      return Response.json({ error: "Daily request limit reached" }, { status: 429 });
     }
 
     // --- Agent sync routes (HMAC auth) ---
