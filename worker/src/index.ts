@@ -114,6 +114,11 @@ export default {
       return html(registerPage());
     }
 
+    // --- JSON API routes (no auth required) ---
+    if (pathname === "/api/auth/register" && method === "POST") return handleRegister(request, env);
+    if (pathname === "/api/auth/login" && method === "POST") return handleLogin(request, env);
+    if (pathname === "/api/auth/logout" && method === "POST") return handleLogout();
+
     // Pages below require auth
     if (!ctx) return redirect("/login");
     const user = { username: ctx.username, role: ctx.role };
@@ -132,10 +137,7 @@ export default {
       return html(adminPage(data.users, user));
     }
 
-    // --- JSON API routes ---
-    if (pathname === "/api/auth/register" && method === "POST") return handleRegister(request, env);
-    if (pathname === "/api/auth/login" && method === "POST") return handleLogin(request, env);
-    if (pathname === "/api/auth/logout" && method === "POST") return handleLogout();
+    // --- JSON API routes (auth required) ---
 
     if (pathname === "/api/auth/me" && method === "GET") {
       const err = requireAuth(ctx);

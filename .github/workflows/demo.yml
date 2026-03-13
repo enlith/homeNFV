@@ -76,7 +76,7 @@ jobs:
         run: |
           cd worker
           npx wrangler d1 execute "${{ steps.resources.outputs.demo_id }}-db" \
-            --remote --file=migrations/0001_init.sql
+             --file=migrations/0001_init.sql
 
       # --- Build and start agent ---
       - name: Build agent
@@ -227,9 +227,9 @@ jobs:
               --arg u "${{ inputs.admin_username }}" \
               --arg h "$HASH" \
               '{id: $id, username: $u, passwordHash: $h, role: "admin", status: "active", createdAt: (now * 1000 | floor)}')
-            npx wrangler kv key put --namespace-id="$KV_ID" "user:${{ inputs.admin_username }}" "$USER_JSON" --remote
-            npx wrangler kv key put --namespace-id="$KV_ID" "user_id:$USER_ID" "${{ inputs.admin_username }}" --remote
-            npx wrangler kv key put --namespace-id="$KV_ID" "meta:user_count" "1" --remote
+            npx wrangler kv key put --namespace-id="$KV_ID" "user:${{ inputs.admin_username }}" "$USER_JSON" 
+            npx wrangler kv key put --namespace-id="$KV_ID" "user_id:$USER_ID" "${{ inputs.admin_username }}" 
+            npx wrangler kv key put --namespace-id="$KV_ID" "meta:user_count" "1" 
             echo "Admin user written directly to KV"
           fi
 
