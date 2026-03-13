@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -58,8 +59,8 @@ func (h *FileHandler) handleGet(w http.ResponseWriter, r *http.Request, fullPath
 	}
 
 	// Serve file
-	w.Header().Set("X-File-Size", strings.Itoa(int(info.Size())))
-	w.Header().Set("X-File-Modified", strings.Itoa(int(info.ModTime().Unix())))
+	w.Header().Set("X-File-Size", strconv.FormatInt(info.Size(), 10))
+	w.Header().Set("X-File-Modified", strconv.FormatInt(info.ModTime().Unix(), 10))
 	http.ServeFile(w, r, fullPath)
 }
 
