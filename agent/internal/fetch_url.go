@@ -2,8 +2,8 @@ package agent
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -20,7 +20,6 @@ func (h *FileHandler) FetchURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Sanitize path
 	clean := filepath.Clean("/" + req.Path)
 	fullPath := filepath.Join(h.Root, clean)
 	if !strings.HasPrefix(fullPath, h.Root) {
@@ -28,40 +27,39 @@ func (h *FileHandler) FetchURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fetch URL
-	resp, err := http.Get(req.URL)
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"fetch failed: %s"}`, err.Error()), http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		http.Error(w, fmt.Sprintf(`{"error":"URL returned %d"}`, resp.StatusCode), http.StatusBadGateway)
-		return
-	}
-
-	// Create parent dirs and write file
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 		http.Error(w, `{"error":"cannot create directory"}`, http.StatusInternalServerError)
 		return
 	}
 
-	f, err := os.Create(fullPath)
-	if err != nil {
-		http.Error(w, `{"error":"cannot create file"}`, http.StatusInternalServerError)
-		return
-	}
-	defer f.Close()
-
-	written, err := io.Copy(f, resp.Body)
-	if err != nil {
-		os.Remove(fullPath)
-		http.Error(w, `{"error":"write failed"}`, http.StatusInternalServerError)
-		return
-	}
-
+	// Respond immediately, download in background
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok", "size": written})
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]interface{}{"status": "downloading"})
+
+	go func() {
+		resp, err := http.Get(req.URL)
+		if err != nil {
+			log.Printf("fetch-url: failed to fetch %s: %v", req.URL, err)
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			log.Printf("fetch-url: %s returned %d", req.URL, resp.StatusCode)
+			return
+		}
+		f, err := os.Create(fullPath)
+		if err != nil {
+			log.Printf("fetch-url: cannot create %s: %v", fullPath, err)
+			return
+		}
+		defer f.Close()
+		written, err := io.Copy(f, resp.Body)
+		if err != nil {
+			os.Remove(fullPath)
+			log.Printf("fetch-url: write failed for %s: %v", fullPath, err)
+			return
+		}
+		log.Printf("fetch-url: saved %s (%d bytes)", clean, written)
+	}()
 }

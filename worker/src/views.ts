@@ -179,8 +179,8 @@ export function browsePage(
       });
       const data = await resp.json();
       if (!resp.ok) { status.textContent = 'Error: ' + data.error; return; }
-      status.textContent = 'Done! (' + (data.size ? (data.size/1024/1024).toFixed(1) + 'MB' : '') + ')';
-      setTimeout(() => location.reload(), 500);
+      status.textContent = data.status === 'downloading' ? 'Download started on server!' : 'Done! (' + (data.size ? (data.size/1024/1024).toFixed(1) + 'MB' : '') + ')';
+      setTimeout(() => location.reload(), 1000);
     }
     function toggleDel() {
       document.getElementById('del-btn').style.display =

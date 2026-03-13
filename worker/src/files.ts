@@ -153,11 +153,10 @@ export async function handleUploadFromURL(filePath: string, sourceURL: string, e
   // Try agent first — agent fetches URL directly to disk (no memory limit)
   const agentResp = await agentFetch(env, "POST", "/api/fetch-url",
     new Blob([JSON.stringify({ url: sourceURL, path: filePath })]).stream());
-  if (agentResp?.ok) {
-    const data = await agentResp.json() as { size: number };
+  if (agentResp && (agentResp.ok || agentResp.status === 202)) {
     await incrementUploadCount(env);
-    await updateFileMetadata(env, filePath, { size: data.size, pending_sync: 0 });
-    return json({ status: "uploaded", size: data.size }, 201);
+    await updateFileMetadata(env, filePath, { size: 0, pending_sync: 0 });
+    return json({ status: "downloading", message: "Agent is downloading the file" }, 202);
   }
 
   // Agent offline — Worker fetches URL and stores in R2 temp (≤25MB)
