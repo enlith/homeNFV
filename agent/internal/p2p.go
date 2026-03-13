@@ -24,7 +24,6 @@ func isPeerLink(url string) bool {
 }
 
 func (h *FileHandler) peerFetch(uri, destDir string) {
-	// Temp dir for client state (DB files etc)
 	stateDir, err := os.MkdirTemp("", "homenfv-p2p-*")
 	if err != nil {
 		log.Printf("p2p: cannot create state dir: %v", err)
@@ -32,11 +31,15 @@ func (h *FileHandler) peerFetch(uri, destDir string) {
 	}
 	defer os.RemoveAll(stateDir)
 
+	// Change to stateDir so client DB files land there
+	origDir, _ := os.Getwd()
+	os.Chdir(stateDir)
+	defer os.Chdir(origDir)
+
 	cfg := torrent.NewDefaultClientConfig()
-	cfg.DataDir = stateDir
+	cfg.DataDir = destDir
 	cfg.DefaultStorage = storage.NewFile(destDir)
 	cfg.Seed = false
-	cfg.NoDHT = false
 	cfg.ListenPort = 0
 
 	client, err := torrent.NewClient(cfg)
@@ -88,12 +91,35 @@ func (h *FileHandler) peerFetch(uri, destDir string) {
 		return
 	}
 
+	total := t.Length()
 	t.DownloadAll()
-	log.Printf("p2p: downloading %q (%d bytes)", t.Name(), t.Length())
-	if !client.WaitAll() {
-		log.Printf("p2p: download incomplete")
+	log.Printf("p2p: downloading %q (%d MB, %d pieces)", t.Name(), total/1024/1024, t.NumPieces())
+
+	// Log progress every 30s
+	done := make(chan bool, 1)
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			case <-time.After(30 * time.Second):
+				completed := t.BytesCompleted()
+				pct := float64(completed) / float64(total) * 100
+				stats := t.Stats()
+				log.Printf("p2p: %q %.1f%% (%d/%d MB) peers: %d active: %d",
+					t.Name(), pct, completed/1024/1024, total/1024/1024,
+					stats.TotalPeers, stats.ActivePeers)
+			}
+		}
+	}()
+
+	ok := client.WaitAll()
+	done <- true
+
+	if !ok {
+		log.Printf("p2p: download incomplete for %q", t.Name())
 		return
 	}
 
-	log.Printf("p2p: completed %q", t.Name())
+	log.Printf("p2p: completed %q (%d MB)", t.Name(), total/1024/1024)
 }
