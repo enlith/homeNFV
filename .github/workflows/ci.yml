@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   lint-and-test-worker:
     name: Worker Lint & Test
@@ -35,6 +38,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22"
+          cache: false
       - run: go mod tidy
       - run: go vet ./...
       - run: go test ./...
@@ -51,6 +55,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22"
+          cache: false
       - run: go mod tidy
       - name: Build agent
         run: go build -o homenfv-agent ./cmd/agent/
