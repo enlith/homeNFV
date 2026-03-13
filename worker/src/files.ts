@@ -89,29 +89,32 @@ export async function handleDownload(filePath: string, env: Env): Promise<Respon
 
 // Upload file
 export async function handleUpload(filePath: string, request: Request, env: Env): Promise<Response> {
-  const contentLength = parseInt(request.headers.get("Content-Length") || "0");
   const contentType = request.headers.get("Content-Type") || "application/octet-stream";
 
+  // Clone body so we can read size if Content-Length is missing
+  const body = await request.arrayBuffer();
+  const fileSize = body.byteLength;
+
   // Check quota
-  const quota = await checkUploadAllowed(contentLength, env);
+  const quota = await checkUploadAllowed(fileSize, env);
   if (!quota.allowed) return json({ error: quota.reason }, 403);
 
   // Try agent first
-  const agentResp = await agentFetch(env, "PUT", `/api/files?path=${encodeURIComponent(filePath)}`, request.body);
+  const agentResp = await agentFetch(env, "PUT", `/api/files?path=${encodeURIComponent(filePath)}`, new Blob([body]).stream());
   if (agentResp?.ok) {
     await incrementUploadCount(env);
-    await updateFileMetadata(env, filePath, { size: contentLength, pending_sync: 0 });
+    await updateFileMetadata(env, filePath, { size: fileSize, pending_sync: 0 });
     return json({ status: "uploaded" }, 201);
   }
 
   // Agent offline — store in R2 temp if within size limit
-  if (contentLength > LIMITS.MAX_FILE_SIZE) {
+  if (fileSize > LIMITS.MAX_FILE_SIZE) {
     return json({ error: `Home offline. File too large for temp storage (max ${LIMITS.MAX_FILE_SIZE / 1024 / 1024}MB)` }, 413);
   }
 
-  await env.R2.put(`temp/${filePath}`, request.body, { httpMetadata: { contentType } });
+  await env.R2.put(`temp/${filePath}`, body, { httpMetadata: { contentType } });
   await incrementUploadCount(env);
-  await updateFileMetadata(env, filePath, { size: contentLength, pending_sync: 1 });
+  await updateFileMetadata(env, filePath, { size: fileSize, pending_sync: 1 });
 
   return json({ status: "queued", message: "Home offline — file queued for sync" }, 202);
 }
@@ -133,10 +136,8 @@ export async function handleDelete(filePath: string, env: Env): Promise<Response
 
 // Create directory
 export async function handleMkdir(filePath: string, env: Env): Promise<Response> {
-  const agentResp = await agentFetch(env, "POST", `/api/mkdir?path=${encodeURIComponent(filePath)}`);
-  if (!agentResp?.ok) {
-    return json({ error: "Cannot create directory — home server offline" }, 503);
-  }
+  // Try agent, but don't fail if offline — just create in D1
+  await agentFetch(env, "POST", `/api/mkdir?path=${encodeURIComponent(filePath)}`);
 
   const parent = filePath.substring(0, filePath.lastIndexOf("/")) || "/";
   const name = filePath.substring(filePath.lastIndexOf("/") + 1);
