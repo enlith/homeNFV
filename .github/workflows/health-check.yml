@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "*/15 * * * *"
   workflow_dispatch:
+    inputs:
+      worker_url:
+        description: "Override Worker URL (e.g. demo URL). Leave empty to use WORKER_DOMAIN variable."
+        required: false
+        type: string
 
 jobs:
   check:
@@ -12,9 +17,21 @@ jobs:
     steps:
       - name: Health check
         run: |
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://${{ vars.WORKER_DOMAIN }}/api/health" || echo "000")
-          echo "Worker status: $STATUS"
+          if [ -n "${{ inputs.worker_url }}" ]; then
+            URL="${{ inputs.worker_url }}"
+          else
+            URL="https://${{ vars.WORKER_DOMAIN }}"
+          fi
+
+          echo "Checking: ${URL}/api/health"
+          RESPONSE=$(curl -s "${URL}/api/health" || echo "connection failed")
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${URL}/api/health" || echo "000")
+
+          echo "HTTP Status: $STATUS"
+          echo "Response: $RESPONSE"
+
           if [ "$STATUS" != "200" ]; then
-            echo "::warning::Worker health check failed with status $STATUS"
+            echo "::warning::Health check failed with status $STATUS"
             exit 1
           fi
+          echo "✅ Worker is healthy"
