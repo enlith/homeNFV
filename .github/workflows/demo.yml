@@ -74,9 +74,14 @@ jobs:
 
       - name: Apply D1 schema
         run: |
-          cd worker
-          npx wrangler d1 execute "${{ steps.resources.outputs.demo_id }}-db" \
-             --file=migrations/0001_init.sql
+          # Apply schema via Cloudflare API directly
+          SQL=$(cat worker/migrations/0001_init.sql | tr '\n' ' ')
+          curl -sf -X POST \
+            "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/d1/database/${{ steps.resources.outputs.d1_id }}/query" \
+            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"sql\": \"$SQL\"}"
+          echo "D1 schema applied"
 
       # --- Build and start agent ---
       - name: Build agent
