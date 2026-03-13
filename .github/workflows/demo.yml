@@ -32,7 +32,7 @@ jobs:
   deploy-demo:
     name: Deploy Demo
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ fromJSON(inputs.duration) + 15 }}
+    timeout-minutes: 330
     environment: demo
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
