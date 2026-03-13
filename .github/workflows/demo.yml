@@ -180,33 +180,58 @@ jobs:
       # --- Seed admin and start sync loop ---
       - name: Seed admin user
         run: |
+          cd worker
           DEMO_URL="${{ steps.deploy.outputs.demo_url }}"
-          echo "Demo URL: $DEMO_URL"
+          KV_ID="${{ steps.resources.outputs.kv_id }}"
 
-          if [ -z "$DEMO_URL" ]; then
-            echo "ERROR: No demo URL available, skipping seed"
-            exit 1
-          fi
+          echo "Seeding admin via API: $DEMO_URL"
 
           # Wait for Worker to be reachable
-          echo "Waiting for Worker..."
-          for i in $(seq 1 15); do
-            if curl -sf "${DEMO_URL}/api/health" > /dev/null 2>&1; then
+          for i in $(seq 1 20); do
+            HEALTH=$(curl -s "${DEMO_URL}/api/health" 2>&1)
+            echo "  health attempt $i: $HEALTH"
+            if echo "$HEALTH" | grep -q '"ok"'; then
               echo "Worker is ready"
               break
             fi
-            echo "  attempt $i..."
-            sleep 2
+            sleep 3
           done
 
-          # Register admin (use jq to safely build JSON)
+          # Register admin via API
           PAYLOAD=$(jq -n --arg u "${{ inputs.admin_username }}" --arg p "${{ inputs.admin_password }}" \
             '{username: $u, password: $p}')
-          echo "Payload: $PAYLOAD"
-          RESULT=$(curl -sv -X POST "${DEMO_URL}/api/auth/register" \
+          echo "Registering with payload: $PAYLOAD"
+
+          HTTP_CODE=$(curl -s -o /tmp/register_response.txt -w "%{http_code}" \
+            -X POST "${DEMO_URL}/api/auth/register" \
             -H "Content-Type: application/json" \
-            -d "$PAYLOAD" 2>&1)
-          echo "Register result: $RESULT"
+            -d "$PAYLOAD")
+          BODY=$(cat /tmp/register_response.txt)
+          echo "HTTP $HTTP_CODE: $BODY"
+
+          if [ "$HTTP_CODE" != "201" ]; then
+            echo "WARNING: API registration returned $HTTP_CODE, trying direct KV write..."
+            # Fallback: write admin user directly to KV via wrangler
+            SALT=$(openssl rand -hex 16)
+            # Use node to hash the password with PBKDF2 matching our auth.ts
+            HASH=$(node -e "
+              const crypto = require('crypto');
+              const salt = Buffer.from('$SALT', 'hex');
+              crypto.pbkdf2('${{ inputs.admin_password }}', salt, 100000, 32, 'sha256', (err, key) => {
+                console.log('$SALT:' + key.toString('hex'));
+              });
+            ")
+            USER_ID=$(node -e "console.log(require('crypto').randomUUID())")
+            USER_JSON=$(jq -n \
+              --arg id "$USER_ID" \
+              --arg u "${{ inputs.admin_username }}" \
+              --arg h "$HASH" \
+              '{id: $id, username: $u, passwordHash: $h, role: "admin", status: "active", createdAt: (now * 1000 | floor)}')
+            npx wrangler kv key put --namespace-id="$KV_ID" "user:${{ inputs.admin_username }}" "$USER_JSON" --remote
+            npx wrangler kv key put --namespace-id="$KV_ID" "user_id:$USER_ID" "${{ inputs.admin_username }}" --remote
+            npx wrangler kv key put --namespace-id="$KV_ID" "meta:user_count" "1" --remote
+            echo "Admin user written directly to KV"
+          fi
 
       - name: Start agent sync loop
         run: |
@@ -233,6 +258,7 @@ jobs:
           echo "  Duration: ${{ inputs.duration }} minutes"
           echo "  Demo ID:  ${{ steps.resources.outputs.demo_id }}"
           echo "  Agent:    Running on GitHub runner via tunnel"
+          echo "  Storage:  ${{ steps.agent.outputs.storage_root }}"
           echo ""
           echo "  Full functionality — upload, browse, download,"
           echo "  sync, and caching all active."
@@ -240,8 +266,24 @@ jobs:
 
       - name: Wait for demo duration
         run: |
+          STORAGE="${{ steps.agent.outputs.storage_root }}"
+          DURATION=$(( ${{ inputs.duration }} * 60 ))
+          ELAPSED=0
+          INTERVAL=30
+
           echo "Demo running for ${{ inputs.duration }} minutes..."
-          sleep $(( ${{ inputs.duration }} * 60 ))
+          echo "Agent storage: $STORAGE"
+          echo ""
+
+          while [ $ELAPSED -lt $DURATION ]; do
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED + INTERVAL))
+            REMAINING=$(( (DURATION - ELAPSED) / 60 ))
+
+            echo "--- ${REMAINING}m remaining | Agent storage contents: ---"
+            find "$STORAGE" -type f -printf '%s\t%p\n' 2>/dev/null | sort || echo "(empty)"
+            echo ""
+          done
 
       # --- Teardown (runs on finish, cancel, or failure) ---
       - name: Teardown demo
