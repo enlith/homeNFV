@@ -80,7 +80,7 @@ jobs:
 
       # --- Build and start agent ---
       - name: Build agent
-        run: cd agent && go build -o homenfv-agent ./cmd/agent/
+        run: cd agent && go mod tidy && go build -o homenfv-agent ./cmd/agent/
 
       - name: Start agent
         id: agent
