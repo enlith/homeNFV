@@ -19,7 +19,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.22"
-      - run: go mod download
+      - run: go mod tidy
       - name: Build
         run: go build -ldflags="-s -w" -o ../dist/homenfv-agent ./cmd/agent/
       - name: Upload artifact
