@@ -60,10 +60,9 @@ func (h *FileHandler) peerFetch(uri, destDir string) {
 	info := t.Info()
 	srcBase := filepath.Join(destDir, t.InfoHash().HexString())
 	for _, f := range info.UpvertedFiles() {
-		parts := append([]string{srcBase}, f.DisplayPath(info)...)
-		src := filepath.Join(parts...)
-		dstParts := append([]string{destDir}, f.DisplayPath(info)...)
-		dst := filepath.Join(dstParts...)
+		dp := f.DisplayPath(info)
+		src := filepath.Join(srcBase, dp)
+		dst := filepath.Join(destDir, dp)
 		if src == dst {
 			continue
 		}
