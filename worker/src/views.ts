@@ -25,6 +25,8 @@ th{font-weight:600;font-size:13px;color:#666}
 .file-row{cursor:pointer}
 .file-row:hover{background:#f9fafb}
 .file-icon{margin-right:6px}
+.share-btn{background:none;border:none;cursor:pointer;font-size:14px;padding:2px 6px;opacity:0.5}
+.share-btn:hover{opacity:1}
 .breadcrumb{margin-bottom:12px;font-size:14px;color:#666}
 .breadcrumb a{margin:0 4px}
 .actions{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center}
@@ -113,6 +115,7 @@ export function browsePage(
         <td><input type="checkbox" class="sel" value="${filePath}" onclick="event.stopPropagation();toggleDel()"><a href="${link}"><span class="file-icon">${icon}</span>${f.name}</a></td>
         <td class="size">${size}</td>
         <td class="size">${modified}</td>
+        <td>${f.is_dir ? "" : `<button class="share-btn" onclick="shareFile('${filePath.replace(/'/g, "\\'")}')">🔗</button>`}</td>
       </tr>`;
     })
     .join("");
@@ -130,8 +133,8 @@ export function browsePage(
         <span id="upload-status" style="font-size:13px"></span>
       </div>
       <table>
-        <thead><tr><th>Name</th><th>Size</th><th>Modified</th></tr></thead>
-        <tbody>${rows || '<tr><td colspan="3" style="color:#999;text-align:center;padding:20px">Empty directory</td></tr>'}</tbody>
+        <thead><tr><th>Name</th><th>Size</th><th>Modified</th><th></th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="4" style="color:#999;text-align:center;padding:20px">Empty directory</td></tr>'}</tbody>
       </table>
     </div>
     <script>
@@ -183,10 +186,25 @@ export function browsePage(
       document.getElementById('del-btn').style.display =
         document.querySelectorAll('.sel:checked').length ? '' : 'none';
     }
+    async function shareFile(path) {
+      const resp = await fetch('/api/share', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path })
+      });
+      const data = await resp.json();
+      if (!resp.ok) { alert('Error: ' + data.error); return; }
+      const link = location.origin + data.url;
+      await navigator.clipboard.writeText(link).catch(() => {});
+      prompt('Share link (expires in 7 days):', link);
+    }
     async function deleteSelected() {
       const checked = [...document.querySelectorAll('.sel:checked')];
       if (!checked.length) return;
       if (!confirm('Delete ' + checked.length + ' item(s)?')) return;
+      const btn = document.getElementById('del-btn');
+      btn.textContent = '🗑 Deleting...';
+      btn.disabled = true;
       for (const cb of checked) {
         await fetch('/api/files?path=' + encodeURIComponent(cb.value), { method: 'DELETE' });
       }
