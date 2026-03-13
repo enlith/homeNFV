@@ -1,0 +1,29 @@
+name: Build Agent
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "agent/**"
+      - ".github/workflows/build-agent.yml"
+
+jobs:
+  build:
+    name: Build ARM64 Binary
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: agent/go.sum
+      - name: Build for ARM64
+        run: GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o ../dist/homenfv-agent ./cmd/agent/
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: homenfv-agent-linux-arm64
+          path: dist/homenfv-agent

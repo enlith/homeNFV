@@ -1,0 +1,14 @@
+[Unit]
+Description=HomeNFV Agent
+After=network.target
+
+[Service]
+Type=simple
+User=homenfv
+EnvironmentFile=/etc/homenfv/config.env
+ExecStart=/usr/local/bin/homenfv-agent
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,20 @@
+name: Health Check
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+jobs:
+  check:
+    name: Ping Worker
+    runs-on: ubuntu-latest
+    steps:
+      - name: Health check
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "https://${{ vars.WORKER_DOMAIN }}/api/health" || echo "000")
+          echo "Worker status: $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "::warning::Worker health check failed with status $STATUS"
+            exit 1
+          fi

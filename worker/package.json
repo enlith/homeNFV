@@ -1,0 +1,14 @@
+{
+  "name": "homenfv-worker",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "lint": "echo 'TODO: add linter'",
+    "test": "echo 'TODO: add tests'"
+  },
+  "devDependencies": {
+    "wrangler": "^3"
+  }
+}
