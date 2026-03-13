@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 
 	agent "github.com/homenfv/agent/internal"
 )
@@ -18,6 +20,7 @@ func main() {
 	if root == "" {
 		root = "/srv/homenfv/files"
 	}
+	workerURL := os.Getenv("HOMENFV_WORKER_URL")
 
 	if err := os.MkdirAll(root, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "cannot create storage root: %v\n", err)
@@ -28,7 +31,6 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, `{"status":"ok"}`)
 	})
 	mux.Handle("/api/files", fileHandler)
@@ -38,6 +40,25 @@ func main() {
 	if secret != "" {
 		handler = agent.AuthMiddleware(secret, mux)
 	}
+
+	// Start sync loop if worker URL is configured
+	if workerURL != "" && secret != "" {
+		sync := agent.NewSyncLoop(workerURL, secret, root)
+		if err := sync.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "sync loop failed: %v\n", err)
+			os.Exit(1)
+		}
+		defer sync.Stop()
+	}
+
+	// Graceful shutdown
+	go func() {
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+		<-sig
+		fmt.Println("\nshutting down")
+		os.Exit(0)
+	}()
 
 	fmt.Printf("HomeNFV agent listening on %s (root: %s)\n", addr, root)
 	if err := http.ListenAndServe(addr, handler); err != nil {
