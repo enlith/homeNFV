@@ -1,6 +1,6 @@
 import { handleRegister, handleLogin, handleLogout } from "./auth";
 import { handleListUsers, handleApproveUser, handleRejectUser } from "./admin";
-import { handleBrowse, handleDownload, handleUpload, handleDelete, handleMkdir } from "./files";
+import { handleBrowse, handleDownload, handleUpload, handleDelete, handleMkdir, handleUploadFromURL } from "./files";
 import { handlePendingList, handlePendingDownload, handlePendingAck, handleMetadataPush, handleMetadataDelete } from "./sync";
 import { authenticate, requireAuth, requireAdmin, type AuthContext } from "./middleware";
 import { checkRequestAllowed } from "./quota";
@@ -184,6 +184,14 @@ export default {
       const filePath = url.searchParams.get("path");
       if (!filePath) return Response.json({ error: "path required" }, { status: 400 });
       return handleMkdir(filePath, env);
+    }
+
+    if (pathname === "/api/upload-url" && method === "POST") {
+      const err = requireAuth(ctx);
+      if (err) return err;
+      const body = await request.json<{ url: string; path: string }>();
+      if (!body.url || !body.path) return Response.json({ error: "url and path required" }, { status: 400 });
+      return handleUploadFromURL(body.path, body.url, env);
     }
 
     return Response.json({ error: "Not found" }, { status: 404 });
