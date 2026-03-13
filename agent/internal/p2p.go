@@ -26,12 +26,21 @@ func isPeerLink(url string) bool {
 }
 
 func (h *FileHandler) peerFetch(uri, destDir string) {
+	// Use temp dir for client state DB to avoid littering destDir
+	stateDir, err := os.MkdirTemp("", "homenfv-p2p-*")
+	if err != nil {
+		log.Printf("p2p: cannot create state dir: %v", err)
+		return
+	}
+	defer os.RemoveAll(stateDir)
+
 	cfg := torrent.NewDefaultClientConfig()
 	cfg.DataDir = destDir
 	cfg.DefaultStorage = storage.NewFileByInfoHash(destDir)
 	cfg.Seed = false
 	cfg.NoDHT = false
 	cfg.ListenPort = 0
+	cfg.ConfigDir = stateDir
 
 	client, err := torrent.NewClient(cfg)
 	if err != nil {
