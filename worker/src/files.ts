@@ -10,7 +10,7 @@ interface Env {
 }
 
 // Proxy a request to the home agent with HMAC auth
-async function agentFetch(env: Env, method: string, agentPath: string, body?: ReadableStream | null): Promise<Response | null> {
+async function agentFetch(env: Env, method: string, agentPath: string, body?: ReadableStream | null, extraHeaders?: Record<string, string>): Promise<Response | null> {
   const { timestamp, signature } = await signRequest(method, agentPath, env.AGENT_SHARED_SECRET);
   try {
     const resp = await fetch(`${env.AGENT_URL}${agentPath}`, {
@@ -18,6 +18,7 @@ async function agentFetch(env: Env, method: string, agentPath: string, body?: Re
       headers: {
         "X-HomeNFV-Timestamp": timestamp,
         "X-HomeNFV-Signature": signature,
+        ...extraHeaders,
       },
       body,
     });
@@ -48,40 +49,55 @@ export async function handleBrowse(filePath: string, env: Env): Promise<Response
 }
 
 // Download file
-export async function handleDownload(filePath: string, env: Env): Promise<Response> {
+export async function handleDownload(filePath: string, env: Env, request?: Request): Promise<Response> {
   const r2Key = `cache/${filePath}`;
+  const rangeHeader = request?.headers.get("Range") || undefined;
 
   // Check R2 cache first
-  const cached = await env.R2.get(r2Key);
+  const r2Opts: R2GetOptions = rangeHeader ? { range: { suffix: 0 } } : {};
+  if (rangeHeader) {
+    const m = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+    if (m) r2Opts.range = { offset: parseInt(m[1]), length: m[2] ? parseInt(m[2]) - parseInt(m[1]) + 1 : undefined };
+  }
+  const cached = await env.R2.get(r2Key, r2Opts);
   if (cached) {
-    return new Response(cached.body, {
-      headers: { "Content-Type": cached.httpMetadata?.contentType || "application/octet-stream" },
-    });
+    const headers: Record<string, string> = { "Content-Type": cached.httpMetadata?.contentType || "application/octet-stream", "Accept-Ranges": "bytes" };
+    const status = rangeHeader && "range" in cached ? 206 : 200;
+    return new Response(cached.body, { status, headers });
   }
 
-  // Try agent
-  const agentResp = await agentFetch(env, "GET", `/api/files?path=${encodeURIComponent(filePath)}`);
-  if (agentResp?.ok) {
+  // Try agent — forward Range header
+  const extra: Record<string, string> = {};
+  if (rangeHeader) extra["Range"] = rangeHeader;
+  const agentResp = await agentFetch(env, "GET", `/api/files?path=${encodeURIComponent(filePath)}`, null, extra);
+  if (agentResp && (agentResp.ok || agentResp.status === 206)) {
     const contentType = agentResp.headers.get("Content-Type") || "application/octet-stream";
-    const [stream1, stream2] = agentResp.body!.tee();
+    const respHeaders: Record<string, string> = { "Content-Type": contentType, "Accept-Ranges": "bytes" };
+    const cr = agentResp.headers.get("Content-Range");
+    if (cr) respHeaders["Content-Range"] = cr;
+    const cl = agentResp.headers.get("Content-Length");
+    if (cl) respHeaders["Content-Length"] = cl;
 
-    // Cache in R2 in background
-    const size = parseInt(agentResp.headers.get("X-File-Size") || "0");
-    if (size > 0 && size <= LIMITS.MAX_FILE_SIZE) {
-      // Use waitUntil if available, otherwise just cache inline
-      env.R2.put(r2Key, stream2, { httpMetadata: { contentType } }).catch(() => {});
-      await updateFileMetadata(env, filePath, { cached_in_r2: 1 });
+    // Cache full responses in R2
+    if (!rangeHeader) {
+      const size = parseInt(agentResp.headers.get("X-File-Size") || "0");
+      if (size > 0 && size <= LIMITS.MAX_FILE_SIZE) {
+        const [stream1, stream2] = agentResp.body!.tee();
+        env.R2.put(r2Key, stream2, { httpMetadata: { contentType } }).catch(() => {});
+        await updateFileMetadata(env, filePath, { cached_in_r2: 1 });
+        return new Response(stream1, { status: agentResp.status, headers: respHeaders });
+      }
     }
 
-    return new Response(stream1, { headers: { "Content-Type": contentType } });
+    return new Response(agentResp.body, { status: agentResp.status, headers: respHeaders });
   }
 
-  // Check R2 temp storage (pending sync files)
-  const temp = await env.R2.get(`temp/${filePath}`);
+  // Check R2 temp storage
+  const temp = await env.R2.get(`temp/${filePath}`, r2Opts);
   if (temp) {
-    return new Response(temp.body, {
-      headers: { "Content-Type": temp.httpMetadata?.contentType || "application/octet-stream" },
-    });
+    const headers: Record<string, string> = { "Content-Type": temp.httpMetadata?.contentType || "application/octet-stream", "Accept-Ranges": "bytes" };
+    const status = rangeHeader && "range" in temp ? 206 : 200;
+    return new Response(temp.body, { status, headers });
   }
 
   return json({ error: "File unavailable — home server offline and not cached" }, 503);
