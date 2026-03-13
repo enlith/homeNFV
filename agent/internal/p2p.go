@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -24,32 +25,27 @@ func isPeerLink(url string) bool {
 }
 
 func (h *FileHandler) peerFetch(uri, destDir string) {
-	stateDir, err := os.MkdirTemp("", "homenfv-p2p-*")
-	if err != nil {
-		log.Printf("p2p: cannot create state dir: %v", err)
-		return
-	}
-	defer os.RemoveAll(stateDir)
-
-	// Change to stateDir so client DB files land there
-	origDir, _ := os.Getwd()
-	os.Chdir(stateDir)
-	defer os.Chdir(origDir)
-
 	cfg := torrent.NewDefaultClientConfig()
 	cfg.DataDir = destDir
 	cfg.DefaultStorage = storage.NewFile(destDir)
 	cfg.Seed = false
-	cfg.NoUpload = true
+	cfg.DisableAggressiveUpload = true
 	cfg.ListenPort = 0
-	cfg.DisableAcceptRateLimiting = true
 
 	client, err := torrent.NewClient(cfg)
 	if err != nil {
 		log.Printf("p2p: failed to create client: %v", err)
 		return
 	}
-	defer client.Close()
+	defer func() {
+		client.Close()
+		// Clean up DB files from working dir and destDir
+		for _, dir := range []string{".", destDir} {
+			for _, pat := range []string{".torrent.db", ".torrent.db-shm", ".torrent.db-wal"} {
+				os.Remove(filepath.Join(dir, pat))
+			}
+		}
+	}()
 
 	var t *torrent.Torrent
 	if strings.HasPrefix(uri, "magnet:") {

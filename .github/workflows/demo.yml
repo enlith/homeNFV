@@ -117,7 +117,7 @@ jobs:
           export HOMENFV_LISTEN_ADDR=127.0.0.1:8787
           export HOMENFV_SHARED_SECRET=$AGENT_SECRET
           export HOMENFV_STORAGE_ROOT=$STORAGE_ROOT
-          cd agent && ./homenfv-agent &
+          cd agent && ./homenfv-agent 2>&1 &
 
           # Wait for agent to be ready
           for i in $(seq 1 10); do
@@ -279,7 +279,7 @@ jobs:
           export HOMENFV_SHARED_SECRET=${{ steps.agent.outputs.agent_secret }}
           export HOMENFV_STORAGE_ROOT=${{ steps.agent.outputs.storage_root }}
           export HOMENFV_WORKER_URL=${{ steps.deploy.outputs.demo_url }}
-          cd agent && ./homenfv-agent &
+          cd agent && ./homenfv-agent 2>&1 &
           sleep 2
           echo "Agent restarted with sync loop"
 
