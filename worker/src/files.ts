@@ -1,4 +1,5 @@
 import { signRequest } from "./agent-auth";
+import { checkUploadAllowed, incrementUploadCount, LIMITS } from "./quota";
 
 interface Env {
   KV: KVNamespace;
@@ -7,8 +8,6 @@ interface Env {
   AGENT_URL: string;
   AGENT_SHARED_SECRET: string;
 }
-
-const MAX_TEMP_SIZE = 25 * 1024 * 1024; // 25MB
 
 // Proxy a request to the home agent with HMAC auth
 async function agentFetch(env: Env, method: string, agentPath: string, body?: ReadableStream | null): Promise<Response | null> {
@@ -68,7 +67,7 @@ export async function handleDownload(filePath: string, env: Env): Promise<Respon
 
     // Cache in R2 in background
     const size = parseInt(agentResp.headers.get("X-File-Size") || "0");
-    if (size > 0 && size <= MAX_TEMP_SIZE) {
+    if (size > 0 && size <= LIMITS.MAX_FILE_SIZE) {
       // Use waitUntil if available, otherwise just cache inline
       env.R2.put(r2Key, stream2, { httpMetadata: { contentType } }).catch(() => {});
       await updateFileMetadata(env, filePath, { cached_in_r2: 1 });
@@ -93,19 +92,25 @@ export async function handleUpload(filePath: string, request: Request, env: Env)
   const contentLength = parseInt(request.headers.get("Content-Length") || "0");
   const contentType = request.headers.get("Content-Type") || "application/octet-stream";
 
+  // Check quota
+  const quota = await checkUploadAllowed(contentLength, env);
+  if (!quota.allowed) return json({ error: quota.reason }, 403);
+
   // Try agent first
   const agentResp = await agentFetch(env, "PUT", `/api/files?path=${encodeURIComponent(filePath)}`, request.body);
   if (agentResp?.ok) {
+    await incrementUploadCount(env);
     await updateFileMetadata(env, filePath, { size: contentLength, pending_sync: 0 });
     return json({ status: "uploaded" }, 201);
   }
 
   // Agent offline — store in R2 temp if within size limit
-  if (contentLength > MAX_TEMP_SIZE) {
-    return json({ error: `Home offline. File too large for temp storage (max ${MAX_TEMP_SIZE / 1024 / 1024}MB)` }, 413);
+  if (contentLength > LIMITS.MAX_FILE_SIZE) {
+    return json({ error: `Home offline. File too large for temp storage (max ${LIMITS.MAX_FILE_SIZE / 1024 / 1024}MB)` }, 413);
   }
 
   await env.R2.put(`temp/${filePath}`, request.body, { httpMetadata: { contentType } });
+  await incrementUploadCount(env);
   await updateFileMetadata(env, filePath, { size: contentLength, pending_sync: 1 });
 
   return json({ status: "queued", message: "Home offline — file queued for sync" }, 202);
