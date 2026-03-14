@@ -19,8 +19,11 @@ jobs:
         run: |
           if [ -n "${{ inputs.worker_url }}" ]; then
             URL="${{ inputs.worker_url }}"
-          else
+          elif [ -n "${{ vars.WORKER_DOMAIN }}" ]; then
             URL="https://${{ vars.WORKER_DOMAIN }}"
+          else
+            echo "⏭ WORKER_DOMAIN not set and no URL provided — skipping"
+            exit 0
           fi
 
           echo "Checking: ${URL}/api/health"
