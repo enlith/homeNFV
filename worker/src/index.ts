@@ -51,7 +51,7 @@ export default {
     }
 
     // --- Rate limit ---
-    if (!(await checkRequestAllowed(env))) {
+    if (!checkRequestAllowed(env)) {
       return Response.json({ error: "Daily request limit reached" }, { status: 429 });
     }
 
