@@ -6,7 +6,7 @@ COPY agent/ ./agent/
 
 # Build the agent binary (static, no P2P/CGO for demo)
 RUN cd agent && \
-    go mod download && \
+    go mod tidy && \
     CGO_ENABLED=0 go build -o homenfv-agent ./cmd/agent/
 
 # Final runtime image
