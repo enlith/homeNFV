@@ -13,6 +13,11 @@ import (
 
 func AuthMiddleware(secret string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		ts := r.Header.Get("X-HomeNFV-Timestamp")
 		sig := r.Header.Get("X-HomeNFV-Signature")
 		if ts == "" || sig == "" {

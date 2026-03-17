@@ -131,8 +131,6 @@ jobs:
               docker logs homenfv-agent 2>&1
               echo "=== Container status ==="
               docker inspect homenfv-agent --format '{{.State.Status}} exit={{.State.ExitCode}}' 2>&1
-              echo "=== Port check ==="
-              docker exec homenfv-agent sh -c 'wget -qO- http://127.0.0.1:8787/health || echo "wget failed inside container"' 2>&1
               exit 1
             fi
             sleep 2
