@@ -143,18 +143,18 @@ jobs:
 
           # Wait for agent to be ready
           for i in $(seq 1 10); do
-            if curl -sf http://127.0.0.1:8787/health > /dev/null 2>&1; then
+            if timeout 3 curl -sf http://127.0.0.1:8787/health 2>&1; then
               echo "Agent is ready (running directly on host)"
               break
             fi
+            echo "  attempt $i/10 failed"
             if [ $i -eq 10 ]; then
-              echo "Agent failed to start on host too!"
-              echo "=== Process status ==="
-              ps aux | grep homenfv-agent || true
-              echo "=== Port check ==="
-              ss -tlnp | grep :8787 || true
-              echo "=== Verbose curl ==="
-              curl -v http://127.0.0.1:8787/health 2>&1 || true
+              echo "Agent failed to respond to HTTP!"
+              echo "=== Goroutine dump (SIGQUIT) ==="
+              kill -QUIT $HOST_AGENT_PID 2>/dev/null || true
+              sleep 2
+              echo "=== Verbose curl with timeout ==="
+              timeout 5 curl -v http://127.0.0.1:8787/health 2>&1 || echo "(timed out)"
               exit 1
             fi
             sleep 2
