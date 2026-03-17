@@ -1,20 +1,20 @@
 # Multi-stage build for HomeNFV demo agent
-FROM golang:1.23 AS builder
+FROM golang:1.23-alpine AS builder
+
+RUN apk add --no-cache gcc musl-dev
 
 WORKDIR /app
 COPY agent/ ./agent/
 
-# Build the agent binary (with P2P support)
+# Build the agent binary (with P2P support, static linked against musl)
 RUN cd agent && \
     go mod tidy && \
-    go build -tags p2p -o homenfv-agent ./cmd/agent/
+    go build -tags p2p -ldflags '-linkmode external -extldflags "-static"' -o homenfv-agent ./cmd/agent/
 
 # Final runtime image
-FROM debian:bookworm-slim
+FROM alpine:3.19
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl jq \
-    && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache ca-certificates curl jq
 
 # Copy the agent binary
 COPY --from=builder /app/agent/homenfv-agent /usr/local/bin/homenfv-agent
