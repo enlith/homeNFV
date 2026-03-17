@@ -4,27 +4,14 @@ FROM golang:1.23 AS builder
 WORKDIR /app
 COPY agent/ ./agent/
 
-# Build the agent binary (CGO enabled for full compatibility)
+# Build the agent binary (static, no P2P/CGO for demo)
 RUN cd agent && \
-    go mod tidy && \
-    go build -o homenfv-agent ./cmd/agent/
+    CGO_ENABLED=0 go build -o homenfv-agent ./cmd/agent/
 
 # Final runtime image
-FROM debian:bookworm-slim
+FROM alpine:3.19
 
-# Install necessary packages
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    curl \
-    jq \
-    findutils \
-    procps \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install cloudflared
-RUN ARCH=$(dpkg --print-architecture) && \
-    curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}" -o /usr/local/bin/cloudflared && \
-    chmod +x /usr/local/bin/cloudflared
+RUN apk add --no-cache ca-certificates curl jq
 
 # Copy the agent binary
 COPY --from=builder /app/agent/homenfv-agent /usr/local/bin/homenfv-agent

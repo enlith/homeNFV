@@ -119,42 +119,19 @@ jobs:
             -e HOMENFV_STORAGE_ROOT="/app/storage" \
             "$DEMO_IMAGE"
 
-          # Debug: test binary directly on host (no container networking)
-          echo "=== Testing binary directly on host ==="
-          docker stop homenfv-agent 2>/dev/null || true
-          docker rm homenfv-agent 2>/dev/null || true
-          sleep 1
-
-          # Extract binary from image
-          docker create --name extract-bin "$DEMO_IMAGE" true
-          docker cp extract-bin:/usr/local/bin/homenfv-agent /tmp/homenfv-agent
-          docker rm extract-bin
-          chmod +x /tmp/homenfv-agent
-
-          echo "=== Binary info ==="
-          file /tmp/homenfv-agent
-          echo "=== Running agent directly on host ==="
-          HOMENFV_LISTEN_ADDR=127.0.0.1:8787 \
-          HOMENFV_SHARED_SECRET="$AGENT_SECRET" \
-          HOMENFV_STORAGE_ROOT="$STORAGE_ROOT" \
-          /tmp/homenfv-agent 2>&1 &
-          HOST_AGENT_PID=$!
-          echo "Agent PID: $HOST_AGENT_PID"
-
           # Wait for agent to be ready
-          for i in $(seq 1 10); do
-            if timeout 3 curl -sf http://127.0.0.1:8787/health 2>&1; then
-              echo "Agent is ready (running directly on host)"
+          for i in $(seq 1 15); do
+            if curl -sf http://127.0.0.1:8787/health 2>/dev/null; then
+              echo "Agent is ready"
               break
             fi
-            echo "  attempt $i/10 failed"
-            if [ $i -eq 10 ]; then
-              echo "Agent failed to respond to HTTP!"
-              echo "=== Goroutine dump (SIGQUIT) ==="
-              kill -QUIT $HOST_AGENT_PID 2>/dev/null || true
-              sleep 2
-              echo "=== Verbose curl with timeout ==="
-              timeout 5 curl -v http://127.0.0.1:8787/health 2>&1 || echo "(timed out)"
+            echo "  attempt $i/15 — waiting..."
+            if [ $i -eq 15 ]; then
+              echo "Agent failed to start!"
+              echo "=== Container logs ==="
+              docker logs homenfv-agent 2>&1
+              echo "=== Container status ==="
+              docker inspect homenfv-agent --format '{{.State.Status}} exit={{.State.ExitCode}}' 2>&1
               exit 1
             fi
             sleep 2
@@ -298,17 +275,28 @@ jobs:
 
       - name: Start agent sync loop
         run: |
-          # Restart agent with worker URL for sync
-          kill $(pgrep homenfv-agent) 2>/dev/null || true
+          # Restart agent container with worker URL for sync
+          docker stop homenfv-agent 2>/dev/null || true
+          docker rm homenfv-agent 2>/dev/null || true
           sleep 1
 
-          HOMENFV_LISTEN_ADDR=127.0.0.1:8787 \
-          HOMENFV_SHARED_SECRET=${{ steps.agent.outputs.agent_secret }} \
-          HOMENFV_STORAGE_ROOT=${{ steps.agent.outputs.storage_root }} \
-          HOMENFV_WORKER_URL=${{ steps.deploy.outputs.demo_url }} \
-          /tmp/homenfv-agent 2>&1 &
+          docker run -d \
+            --name homenfv-agent \
+            --network host \
+            -v "${{ steps.agent.outputs.storage_root }}":/app/storage \
+            -e HOMENFV_LISTEN_ADDR=127.0.0.1:8787 \
+            -e HOMENFV_SHARED_SECRET=${{ steps.agent.outputs.agent_secret }} \
+            -e HOMENFV_STORAGE_ROOT=/app/storage \
+            -e HOMENFV_WORKER_URL=${{ steps.deploy.outputs.demo_url }} \
+            "$DEMO_IMAGE"
+
           sleep 2
-          echo "Agent restarted with sync loop"
+          if curl -sf http://127.0.0.1:8787/health 2>/dev/null; then
+            echo "Agent restarted with sync loop"
+          else
+            echo "WARNING: Agent may not have restarted properly"
+            docker logs homenfv-agent 2>&1
+          fi
 
       - name: Print demo info
         run: |
@@ -344,9 +332,10 @@ jobs:
             ELAPSED=$((ELAPSED + INTERVAL))
             REMAINING=$(( (DURATION - ELAPSED) / 60 ))
 
-            # Check agent is still running
-            if ! pgrep homenfv-agent > /dev/null 2>&1; then
-              echo "WARNING: Agent process stopped!"
+            # Check agent container is still running
+            if [ "$(docker inspect homenfv-agent --format '{{.State.Status}}' 2>/dev/null)" != "running" ]; then
+              echo "WARNING: Agent container stopped!"
+              docker logs --tail 20 homenfv-agent 2>&1 || true
             fi
 
             echo "--- ${REMAINING}m remaining | Agent storage contents: ---"
@@ -362,8 +351,9 @@ jobs:
           DEMO_ID="${{ steps.resources.outputs.demo_id }}"
           echo "Tearing down demo..."
 
-          # Stop agent and tunnel
-          kill $(pgrep homenfv-agent) 2>/dev/null || true
+          # Stop agent container and tunnel
+          docker stop homenfv-agent 2>/dev/null || true
+          docker rm homenfv-agent 2>/dev/null || true
           kill ${{ steps.tunnel.outputs.tunnel_pid }} 2>/dev/null || true
 
           # Delete worker

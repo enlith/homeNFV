@@ -1,3 +1,5 @@
+//go:build p2p
+
 package agent
 
 import (
