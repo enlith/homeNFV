@@ -202,9 +202,12 @@ jobs:
           echo "jwt_secret=$JWT_SECRET" >> "$GITHUB_OUTPUT"
 
       # --- Seed admin and start sync loop ---
+      - name: Mask secrets
+        run: echo "::add-mask::${{ inputs.admin_password }}"
+        shell: bash
+
       - name: Seed admin user
         run: |
-          echo "::add-mask::${{ inputs.admin_password }}"
           cd worker
           DEMO_URL="${{ steps.deploy.outputs.demo_url }}"
           KV_ID="${{ steps.resources.outputs.kv_id }}"
