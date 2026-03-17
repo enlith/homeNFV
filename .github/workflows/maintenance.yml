@@ -68,7 +68,7 @@ jobs:
           node-version: "20"
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.23"
       - name: Audit Worker
         run: cd worker && npm audit
         continue-on-error: true
