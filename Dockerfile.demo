@@ -14,7 +14,7 @@ RUN cd agent && \
 # Final runtime image
 FROM alpine:3.19
 
-RUN apk add --no-cache ca-certificates curl jq
+RUN apk add --no-cache ca-certificates curl jq libstdc++
 
 # Copy the agent binary
 COPY --from=builder /app/agent/homenfv-agent /usr/local/bin/homenfv-agent
