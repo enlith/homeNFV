@@ -1,0 +1,43 @@
+# Git
+.git/
+.gitignore
+
+# Documentation
+README.md
+*.md
+
+# CI/CD
+.github/
+
+# Worker files (not needed for agent container)
+worker/node_modules/
+worker/dist/
+worker/.wrangler/
+worker/package-lock.json
+worker/wrangler.toml
+
+# Agent build artifacts
+agent/homenfv-agent
+agent/.env*
+
+# Deployment configs
+deploy/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+.tmp/

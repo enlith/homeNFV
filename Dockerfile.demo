@@ -1,0 +1,54 @@
+# Multi-stage build for HomeNFV demo agent
+FROM golang:1.22-alpine AS builder
+
+WORKDIR /app
+COPY agent/ ./agent/
+
+# Build the agent binary
+RUN cd agent && \
+    go mod tidy && \
+    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o homenfv-agent ./cmd/agent/
+
+# Final runtime image
+FROM alpine:latest
+
+# Install necessary packages
+RUN apk add --no-cache \
+    ca-certificates \
+    curl \
+    jq \
+    bash \
+    findutils \
+    procps
+
+# Install cloudflared
+RUN ARCH=$(uname -m) && \
+    if [ "$ARCH" = "x86_64" ]; then \
+        curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared; \
+    elif [ "$ARCH" = "aarch64" ]; then \
+        curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64 -o /usr/local/bin/cloudflared; \
+    else \
+        echo "Unsupported architecture: $ARCH" && exit 1; \
+    fi && \
+    chmod +x /usr/local/bin/cloudflared
+
+# Copy the agent binary
+COPY --from=builder /app/agent/homenfv-agent /usr/local/bin/homenfv-agent
+
+# Create directories
+RUN mkdir -p /app/storage /app/logs
+
+WORKDIR /app
+
+# Copy entrypoint script
+COPY docker/demo-entrypoint.sh /usr/local/bin/demo-entrypoint.sh
+RUN chmod +x /usr/local/bin/demo-entrypoint.sh
+
+# Expose agent port
+EXPOSE 8787
+
+# Default environment variables
+ENV HOMENFV_LISTEN_ADDR=0.0.0.0:8787
+ENV HOMENFV_STORAGE_ROOT=/app/storage
+
+ENTRYPOINT ["/usr/local/bin/demo-entrypoint.sh"]

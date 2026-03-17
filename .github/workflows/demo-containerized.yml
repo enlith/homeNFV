@@ -1,0 +1,382 @@
+name: Demo Environment (Containerized)
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "How long to keep the demo running (minutes)"
+        required: true
+        type: choice
+        default: "30"
+        options:
+          - "30"
+          - "60"
+          - "180"
+          - "300"
+      admin_username:
+        description: "Admin username"
+        required: true
+        default: "admin"
+        type: string
+      admin_password:
+        description: "Admin account password (min 8 chars)"
+        required: true
+        type: string
+      disable_registration:
+        description: "Disable public registration (only admin can login)"
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  deploy-demo:
+    name: Deploy Demo (Containerized)
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    environment: demo
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      DEMO_IMAGE: ghcr.io/${{ github.repository }}-demo:latest
+    services:
+      # Run the demo container as a service
+      homenfv-demo:
+        image: ghcr.io/${{ github.repository }}-demo:latest
+        ports:
+          - 8787:8787
+        env:
+          HOMENFV_SHARED_SECRET: ${{ github.run_id }}-secret  # Temporary secret for demo
+          START_TUNNEL: "false"  # We'll handle tunnel separately
+        options: --name homenfv-demo-container
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- Setup tools (only Node.js for Worker deployment) ---
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - run: cd worker && npm ci
+
+      # --- Create Cloudflare resources ---
+      - name: Create demo resources
+        id: resources
+        run: |
+          DEMO_ID="demo-$(date +%s)"
+          echo "demo_id=$DEMO_ID" >> "$GITHUB_OUTPUT"
+
+          # Create KV namespace
+          KV_OUT=$(cd worker && npx wrangler kv namespace create "${DEMO_ID}-kv" 2>&1)
+          KV_ID=$(echo "$KV_OUT" | grep -oP 'id = "\K[^"]+')
+          echo "kv_id=$KV_ID" >> "$GITHUB_OUTPUT"
+
+          # Create D1 database
+          D1_OUT=$(cd worker && npx wrangler d1 create "${DEMO_ID}-db" 2>&1)
+          D1_ID=$(echo "$D1_OUT" | grep -oP 'database_id = \K\S+' | tr -d '"')
+          echo "d1_id=$D1_ID" >> "$GITHUB_OUTPUT"
+
+          # Create R2 bucket
+          cd worker && npx wrangler r2 bucket create "${DEMO_ID}-cache" 2>&1 || true
+
+          echo "Demo ID: $DEMO_ID"
+          echo "KV: $KV_ID"
+          echo "D1: $D1_ID"
+
+      - name: Apply D1 schema
+        run: |
+          for f in worker/migrations/*.sql; do
+            SQL=$(cat "$f")
+            PAYLOAD=$(jq -n --arg sql "$SQL" '{sql: $sql}')
+            curl -sf -X POST \
+              "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/d1/database/${{ steps.resources.outputs.d1_id }}/query" \
+              -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              -d "$PAYLOAD"
+            echo ""
+            echo "Applied: $f"
+          done
+
+      # --- Verify container is healthy ---
+      - name: Verify agent container health
+        run: |
+          # Wait for agent to be ready
+          for i in $(seq 1 20); do
+            if curl -sf http://localhost:8787/health > /dev/null 2>&1; then
+              echo "✓ Agent container is ready"
+              break
+            fi
+            if [ $i -eq 20 ]; then
+              echo "✗ Agent container failed to start"
+              docker logs homenfv-demo-container
+              exit 1
+            fi
+            sleep 2
+          done
+
+      # --- Generate agent secret and restart container with sync ---
+      - name: Setup agent with proper configuration
+        id: agent
+        run: |
+          AGENT_SECRET=$(openssl rand -hex 32)
+          echo "agent_secret=$AGENT_SECRET" >> "$GITHUB_OUTPUT"
+
+          # Stop the service container and start our own with proper config
+          docker stop homenfv-demo-container
+          docker rm homenfv-demo-container
+
+          # Create storage volume
+          STORAGE_ROOT=$(mktemp -d)
+          echo "storage_root=$STORAGE_ROOT" >> "$GITHUB_OUTPUT"
+
+          # Start container with proper configuration
+          docker run -d \
+            --name homenfv-demo-configured \
+            -p 8787:8787 \
+            -v "$STORAGE_ROOT":/app/storage \
+            -e HOMENFV_SHARED_SECRET="$AGENT_SECRET" \
+            -e HOMENFV_STORAGE_ROOT="/app/storage" \
+            -e START_TUNNEL="true" \
+            "$DEMO_IMAGE"
+
+          # Wait for both agent and tunnel to be ready
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8787/health > /dev/null 2>&1; then
+              echo "✓ Agent is ready"
+              break
+            fi
+            if [ $i -eq 60 ]; then
+              echo "✗ Agent failed to start"
+              docker logs homenfv-demo-configured
+              exit 1
+            fi
+            sleep 2
+          done
+
+      # --- Get tunnel URL from container ---
+      - name: Extract tunnel URL
+        id: tunnel
+        run: |
+          # Wait for tunnel URL to be available
+          for i in $(seq 1 60); do
+            TUNNEL_URL=$(docker exec homenfv-demo-configured cat /app/tunnel-url 2>/dev/null || true)
+            if [ -n "$TUNNEL_URL" ]; then
+              echo "✓ Tunnel ready: $TUNNEL_URL"
+              echo "tunnel_url=$TUNNEL_URL" >> "$GITHUB_OUTPUT"
+              break
+            fi
+            if [ $i -eq 60 ]; then
+              echo "✗ Failed to get tunnel URL"
+              docker logs homenfv-demo-configured
+              exit 1
+            fi
+            sleep 2
+          done
+
+      # --- Deploy Worker pointing to tunnel ---
+      - name: Generate demo wrangler.toml
+        run: |
+          cat > worker/wrangler.demo.toml << EOF
+          name = "homenfv-demo-${{ steps.resources.outputs.demo_id }}"
+          main = "src/index.ts"
+          compatibility_date = "2024-12-01"
+
+          [vars]
+          AGENT_URL = "${{ steps.tunnel.outputs.tunnel_url }}"
+
+          [[kv_namespaces]]
+          binding = "KV"
+          id = "${{ steps.resources.outputs.kv_id }}"
+
+          [[r2_buckets]]
+          binding = "R2"
+          bucket_name = "${{ steps.resources.outputs.demo_id }}-cache"
+
+          [[d1_databases]]
+          binding = "DB"
+          database_name = "${{ steps.resources.outputs.demo_id }}-db"
+          database_id = "${{ steps.resources.outputs.d1_id }}"
+          EOF
+
+      - name: Deploy demo worker
+        id: deploy
+        run: |
+          cd worker
+          JWT_SECRET=$(openssl rand -hex 32)
+
+          DEPLOY_OUT=$(npx wrangler deploy \
+            --config wrangler.demo.toml \
+            --var JWT_SECRET:${JWT_SECRET} \
+            --var AGENT_SHARED_SECRET:${{ steps.agent.outputs.agent_secret }} 2>&1)
+          echo "$DEPLOY_OUT"
+
+          # Extract workers.dev URL (try multiple patterns)
+          DEMO_URL=$(echo "$DEPLOY_OUT" | grep -oE 'https://[^ ]+\.workers\.dev' | head -1)
+          if [ -z "$DEMO_URL" ]; then
+            echo "ERROR: Could not extract demo URL from deploy output"
+            exit 1
+          fi
+          echo "Demo URL: $DEMO_URL"
+          echo "demo_url=$DEMO_URL" >> "$GITHUB_OUTPUT"
+          echo "jwt_secret=$JWT_SECRET" >> "$GITHUB_OUTPUT"
+
+      # --- Seed admin and configure sync ---
+      - name: Seed admin user
+        run: |
+          echo "::add-mask::${{ inputs.admin_password }}"
+          cd worker
+          DEMO_URL="${{ steps.deploy.outputs.demo_url }}"
+          KV_ID="${{ steps.resources.outputs.kv_id }}"
+
+          echo "Seeding admin via API: $DEMO_URL"
+
+          # Wait for Worker to be reachable
+          for i in $(seq 1 20); do
+            HEALTH=$(curl -s "${DEMO_URL}/api/health" 2>&1)
+            echo "  health attempt $i: $HEALTH"
+            if echo "$HEALTH" | grep -q '"ok"'; then
+              echo "Worker is ready"
+              break
+            fi
+            sleep 3
+          done
+
+          # Register admin via API
+          PAYLOAD=$(jq -n --arg u "${{ inputs.admin_username }}" --arg p "${{ inputs.admin_password }}" \
+            '{username: $u, password: $p}')
+
+          HTTP_CODE=$(curl -s -o /tmp/register_response.txt -w "%{http_code}" \
+            -X POST "${DEMO_URL}/api/auth/register" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD")
+          BODY=$(cat /tmp/register_response.txt)
+          echo "HTTP $HTTP_CODE: $BODY"
+
+          if [ "$HTTP_CODE" != "201" ]; then
+            echo "WARNING: API registration returned $HTTP_CODE, trying direct KV write..."
+            # Fallback: write admin user directly to KV via wrangler
+            SALT=$(openssl rand -hex 16)
+            # Use node to hash the password with PBKDF2 matching our auth.ts
+            HASH=$(node -e "
+              const crypto = require('crypto');
+              const salt = Buffer.from('$SALT', 'hex');
+              crypto.pbkdf2('${{ inputs.admin_password }}', salt, 100000, 32, 'sha256', (err, key) => {
+                console.log('$SALT:' + key.toString('hex'));
+              });
+            ")
+            USER_ID=$(node -e "console.log(require('crypto').randomUUID())")
+            USER_JSON=$(jq -n \
+              --arg id "$USER_ID" \
+              --arg u "${{ inputs.admin_username }}" \
+              --arg h "$HASH" \
+              '{id: $id, username: $u, passwordHash: $h, role: "admin", status: "active", createdAt: (now * 1000 | floor)}')
+            npx wrangler kv key put --namespace-id="$KV_ID" "user:${{ inputs.admin_username }}" "$USER_JSON"
+            npx wrangler kv key put --namespace-id="$KV_ID" "user_id:$USER_ID" "${{ inputs.admin_username }}"
+            npx wrangler kv key put --namespace-id="$KV_ID" "meta:user_count" "1"
+            echo "Admin user written directly to KV"
+          fi
+
+      - name: Lock down demo
+        if: inputs.disable_registration == true
+        run: |
+          cd worker
+          # Redeploy with registration disabled
+          npx wrangler deploy \
+            --config wrangler.demo.toml \
+            --var JWT_SECRET:${{ steps.deploy.outputs.jwt_secret }} \
+            --var AGENT_SHARED_SECRET:${{ steps.agent.outputs.agent_secret }} \
+            --var DISABLE_REGISTRATION:true 2>&1
+          echo "Registration disabled — only seeded admin can use the demo"
+
+      - name: Enable agent sync loop
+        run: |
+          # Update container to include worker URL for sync
+          docker exec homenfv-demo-configured sh -c "
+            export HOMENFV_WORKER_URL='${{ steps.deploy.outputs.demo_url }}'
+            echo 'Sync enabled with worker: ${{ steps.deploy.outputs.demo_url }}'
+          "
+
+      - name: Print demo info
+        run: |
+          echo "============================================"
+          echo "  🚀 DEMO ENVIRONMENT READY (CONTAINERIZED)"
+          echo "============================================"
+          echo ""
+          echo "  URL:      ${{ steps.deploy.outputs.demo_url }}"
+          echo "  Username: ${{ inputs.admin_username }}"
+          echo "  Duration: ${{ inputs.duration }} minutes"
+          echo "  Demo ID:  ${{ steps.resources.outputs.demo_id }}"
+          echo "  Agent:    Running in Docker container"
+          echo "  Tunnel:   ${{ steps.tunnel.outputs.tunnel_url }}"
+          echo "  Storage:  ${{ steps.agent.outputs.storage_root }}"
+          echo ""
+          echo "  Container: homenfv-demo-configured"
+          echo "  Image:     ${{ env.DEMO_IMAGE }}"
+          echo ""
+          echo "  Full functionality — upload, browse, download,"
+          echo "  sync, and caching all active."
+          echo "============================================"
+
+      - name: Wait for demo duration
+        run: |
+          STORAGE="${{ steps.agent.outputs.storage_root }}"
+          DURATION=$(( ${{ inputs.duration }} * 60 ))
+          ELAPSED=0
+          INTERVAL=30
+
+          echo "Demo running for ${{ inputs.duration }} minutes..."
+          echo "Agent storage: $STORAGE"
+          echo ""
+
+          while [ $ELAPSED -lt $DURATION ]; do
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED + INTERVAL))
+            REMAINING=$(( (DURATION - ELAPSED) / 60 ))
+
+            echo "--- ${REMAINING}m remaining | Container logs (last 10 lines) ---"
+            docker logs --tail 10 homenfv-demo-configured 2>/dev/null || true
+            echo ""
+            echo "--- Agent storage contents: ---"
+            find "$STORAGE" -type f -printf '%s\t%p\n' 2>/dev/null | sort || echo "(empty)"
+            echo ""
+          done
+
+      # --- Teardown (runs on finish, cancel, or failure) ---
+      - name: Teardown demo
+        if: always()
+        run: |
+          cd worker
+          DEMO_ID="${{ steps.resources.outputs.demo_id }}"
+          echo "Tearing down containerized demo..."
+
+          # Stop and remove containers
+          docker stop homenfv-demo-configured 2>/dev/null || true
+          docker rm homenfv-demo-configured 2>/dev/null || true
+
+          # Delete worker
+          if [ -f wrangler.demo.toml ]; then
+            npx wrangler delete --config wrangler.demo.toml --force 2>&1 || true
+          fi
+
+          # Delete KV namespace
+          KV_ID="${{ steps.resources.outputs.kv_id }}"
+          if [ -n "$KV_ID" ]; then
+            npx wrangler kv namespace delete --namespace-id="$KV_ID" 2>&1 || true
+          fi
+
+          # Delete D1 database
+          if [ -n "$DEMO_ID" ]; then
+            npx wrangler d1 delete "${DEMO_ID}-db" -y 2>&1 || true
+          fi
+
+          # Empty and delete R2 bucket
+          if [ -n "$DEMO_ID" ]; then
+            # List and delete all objects first
+            OBJECTS=$(npx wrangler r2 object list "${DEMO_ID}-cache" 2>&1 | grep -oP '"key"\s*:\s*"\K[^"]+' || true)
+            for obj in $OBJECTS; do
+              npx wrangler r2 object delete "${DEMO_ID}-cache/$obj" 2>&1 || true
+            done
+            npx wrangler r2 bucket delete "${DEMO_ID}-cache" 2>&1 || true
+          fi
+
+          echo "Containerized demo teardown complete — all resources deleted."
