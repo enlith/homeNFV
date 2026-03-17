@@ -12,7 +12,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ lower(github.repository) }}-demo
+  IMAGE_NAME: enlith/homenfv-demo
 
 jobs:
   build-and-push:

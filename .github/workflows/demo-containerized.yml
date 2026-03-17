@@ -37,11 +37,11 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      DEMO_IMAGE: ghcr.io/${{ lower(github.repository) }}-demo:latest
+      DEMO_IMAGE: ghcr.io/enlith/homenfv-demo:latest
     services:
       # Run the demo container as a service
       homenfv-demo:
-        image: ghcr.io/${{ lower(github.repository) }}-demo:latest
+        image: ghcr.io/enlith/homenfv-demo:latest
         ports:
           - 8787:8787
         env:
