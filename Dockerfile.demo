@@ -1,35 +1,29 @@
 # Multi-stage build for HomeNFV demo agent
-FROM golang:1.23-alpine AS builder
+FROM golang:1.23 AS builder
 
 WORKDIR /app
 COPY agent/ ./agent/
 
-# Build the agent binary
+# Build the agent binary (CGO enabled for full compatibility)
 RUN cd agent && \
     go mod tidy && \
-    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o homenfv-agent ./cmd/agent/
+    go build -o homenfv-agent ./cmd/agent/
 
 # Final runtime image
-FROM alpine:latest
+FROM debian:bookworm-slim
 
 # Install necessary packages
-RUN apk add --no-cache \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     jq \
-    bash \
     findutils \
-    procps
+    procps \
+    && rm -rf /var/lib/apt/lists/*
 
 # Install cloudflared
-RUN ARCH=$(uname -m) && \
-    if [ "$ARCH" = "x86_64" ]; then \
-        curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared; \
-    elif [ "$ARCH" = "aarch64" ]; then \
-        curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64 -o /usr/local/bin/cloudflared; \
-    else \
-        echo "Unsupported architecture: $ARCH" && exit 1; \
-    fi && \
+RUN ARCH=$(dpkg --print-architecture) && \
+    curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}" -o /usr/local/bin/cloudflared && \
     chmod +x /usr/local/bin/cloudflared
 
 # Copy the agent binary
