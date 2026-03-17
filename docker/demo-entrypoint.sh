@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 set -e
 
 mkdir -p "${HOMENFV_STORAGE_ROOT:-/app/storage}"

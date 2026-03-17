@@ -4,15 +4,17 @@ FROM golang:1.23 AS builder
 WORKDIR /app
 COPY agent/ ./agent/
 
-# Build the agent binary (static, no P2P/CGO for demo)
+# Build the agent binary (with P2P support)
 RUN cd agent && \
     go mod tidy && \
-    CGO_ENABLED=0 go build -o homenfv-agent ./cmd/agent/
+    go build -tags p2p -o homenfv-agent ./cmd/agent/
 
 # Final runtime image
-FROM alpine:3.19
+FROM debian:bookworm-slim
 
-RUN apk add --no-cache ca-certificates curl jq
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl jq \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy the agent binary
 COPY --from=builder /app/agent/homenfv-agent /usr/local/bin/homenfv-agent
