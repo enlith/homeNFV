@@ -112,9 +112,8 @@ jobs:
 
           docker run -d \
             --name homenfv-agent \
-            --network host \
+            -p 8787:8787 \
             -v "$STORAGE_ROOT":/app/storage \
-            -e HOMENFV_LISTEN_ADDR=127.0.0.1:8787 \
             -e HOMENFV_SHARED_SECRET="$AGENT_SECRET" \
             -e HOMENFV_STORAGE_ROOT="/app/storage" \
             "$DEMO_IMAGE"
@@ -132,6 +131,8 @@ jobs:
               docker logs homenfv-agent 2>&1
               echo "=== Container status ==="
               docker inspect homenfv-agent --format '{{.State.Status}} exit={{.State.ExitCode}}' 2>&1
+              echo "=== Port check ==="
+              docker exec homenfv-agent sh -c 'wget -qO- http://127.0.0.1:8787/health || echo "wget failed inside container"' 2>&1
               exit 1
             fi
             sleep 2
@@ -282,9 +283,8 @@ jobs:
 
           docker run -d \
             --name homenfv-agent \
-            --network host \
+            -p 8787:8787 \
             -v "${{ steps.agent.outputs.storage_root }}":/app/storage \
-            -e HOMENFV_LISTEN_ADDR=127.0.0.1:8787 \
             -e HOMENFV_SHARED_SECRET=${{ steps.agent.outputs.agent_secret }} \
             -e HOMENFV_STORAGE_ROOT=/app/storage \
             -e HOMENFV_WORKER_URL=${{ steps.deploy.outputs.demo_url }} \
