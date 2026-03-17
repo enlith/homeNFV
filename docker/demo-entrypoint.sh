@@ -37,16 +37,23 @@ AGENT_PID=$!
 
 # Wait for agent to be ready
 echo "Waiting for agent to be ready..."
-for i in $(seq 1 30); do
+for i in $(seq 1 60); do
     if curl -sf "http://127.0.0.1:8787/health" > /dev/null 2>&1; then
         echo "✓ Agent is ready"
         break
     fi
-    if [ $i -eq 30 ]; then
-        echo "✗ Agent failed to start"
+    echo "  Health check attempt $i/60..."
+    if [ $i -eq 60 ]; then
+        echo "✗ Agent failed to start after 60 attempts"
+        echo "=== Process Status ==="
+        ps aux | grep homenfv-agent || true
+        echo "=== Network Status ==="
+        netstat -tlnp | grep :8787 || true
+        echo "=== Testing direct connection ==="
+        curl -v "http://127.0.0.1:8787/health" || true
         exit 1
     fi
-    sleep 1
+    sleep 2
 done
 
 # Start cloudflared tunnel if not running in "agent-only" mode

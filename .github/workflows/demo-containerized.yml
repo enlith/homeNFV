@@ -140,17 +140,27 @@ jobs:
             "$DEMO_IMAGE"
 
           # Wait for both agent and tunnel to be ready
-          for i in $(seq 1 60); do
-            if curl -sf http://localhost:8787/health > /dev/null 2>&1; then
+          echo "Checking container status..."
+          docker ps | grep homenfv-demo-configured || echo "Container not found!"
+          docker logs homenfv-demo-configured | head -10 || true
+
+          for i in $(seq 1 30); do
+            echo "Health check attempt $i/30..."
+            if curl -sf http://localhost:8787/health; then
               echo "✓ Agent is ready"
               break
             fi
-            if [ $i -eq 60 ]; then
-              echo "✗ Agent failed to start"
+            if [ $i -eq 30 ]; then
+              echo "✗ Agent failed to start after 30 attempts"
+              echo "=== Container Status ==="
+              docker ps -a | grep homenfv-demo-configured || true
+              echo "=== Container Logs ==="
               docker logs homenfv-demo-configured
+              echo "=== Network Test ==="
+              netstat -tlnp | grep :8787 || true
               exit 1
             fi
-            sleep 2
+            sleep 3
           done
 
       # --- Get tunnel URL from container ---
