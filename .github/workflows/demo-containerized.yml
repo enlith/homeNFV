@@ -34,20 +34,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 330
     environment: demo
+    permissions:
+      contents: read
+      packages: read
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       DEMO_IMAGE: ghcr.io/enlith/homenfv-demo:latest
-    services:
-      # Run the demo container as a service
-      homenfv-demo:
-        image: ghcr.io/enlith/homenfv-demo:latest
-        ports:
-          - 8787:8787
-        env:
-          HOMENFV_SHARED_SECRET: ${{ github.run_id }}-secret  # Temporary secret for demo
-          START_TUNNEL: "false"  # We'll handle tunnel separately
-        options: --name homenfv-demo-container
     steps:
       - uses: actions/checkout@v4
 
@@ -58,6 +51,16 @@ jobs:
           cache: npm
           cache-dependency-path: worker/package-lock.json
       - run: cd worker && npm ci
+
+      - name: Install cloudflared
+        run: |
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb -o cloudflared.deb
+          sudo dpkg -i cloudflared.deb
+
+      - name: Pull demo image
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          docker pull "$DEMO_IMAGE"
 
       # --- Create Cloudflare resources ---
       - name: Create demo resources
@@ -97,91 +100,63 @@ jobs:
             echo "Applied: $f"
           done
 
-      # --- Verify container is healthy ---
-      - name: Verify agent container health
-        run: |
-          # Wait for agent to be ready
-          for i in $(seq 1 20); do
-            if curl -sf http://localhost:8787/health > /dev/null 2>&1; then
-              echo "✓ Agent container is ready"
-              break
-            fi
-            if [ $i -eq 20 ]; then
-              echo "✗ Agent container failed to start"
-              docker logs homenfv-demo-container
-              exit 1
-            fi
-            sleep 2
-          done
-
-      # --- Generate agent secret and restart container with sync ---
-      - name: Setup agent with proper configuration
+      # --- Start agent container with host networking ---
+      - name: Start agent
         id: agent
         run: |
           AGENT_SECRET=$(openssl rand -hex 32)
           echo "agent_secret=$AGENT_SECRET" >> "$GITHUB_OUTPUT"
 
-          # Stop the service container and start our own with proper config
-          docker stop homenfv-demo-container
-          docker rm homenfv-demo-container
-
-          # Create storage volume
           STORAGE_ROOT=$(mktemp -d)
           echo "storage_root=$STORAGE_ROOT" >> "$GITHUB_OUTPUT"
 
-          # Start container with proper configuration
           docker run -d \
-            --name homenfv-demo-configured \
-            -p 8787:8787 \
+            --name homenfv-agent \
+            --network host \
             -v "$STORAGE_ROOT":/app/storage \
+            -e HOMENFV_LISTEN_ADDR=127.0.0.1:8787 \
             -e HOMENFV_SHARED_SECRET="$AGENT_SECRET" \
             -e HOMENFV_STORAGE_ROOT="/app/storage" \
-            -e START_TUNNEL="true" \
             "$DEMO_IMAGE"
 
-          # Wait for both agent and tunnel to be ready
-          echo "Checking container status..."
-          docker ps | grep homenfv-demo-configured || echo "Container not found!"
-          docker logs homenfv-demo-configured | head -10 || true
-
-          for i in $(seq 1 30); do
-            echo "Health check attempt $i/30..."
-            if curl -sf http://localhost:8787/health; then
-              echo "✓ Agent is ready"
+          # Wait for agent to be ready
+          for i in $(seq 1 15); do
+            if curl -sf http://127.0.0.1:8787/health > /dev/null 2>&1; then
+              echo "Agent is ready"
               break
             fi
-            if [ $i -eq 30 ]; then
-              echo "✗ Agent failed to start after 30 attempts"
-              echo "=== Container Status ==="
-              docker ps -a | grep homenfv-demo-configured || true
-              echo "=== Container Logs ==="
-              docker logs homenfv-demo-configured
-              echo "=== Network Test ==="
-              netstat -tlnp | grep :8787 || true
-              exit 1
-            fi
-            sleep 3
-          done
-
-      # --- Get tunnel URL from container ---
-      - name: Extract tunnel URL
-        id: tunnel
-        run: |
-          # Wait for tunnel URL to be available
-          for i in $(seq 1 60); do
-            TUNNEL_URL=$(docker exec homenfv-demo-configured cat /app/tunnel-url 2>/dev/null || true)
-            if [ -n "$TUNNEL_URL" ]; then
-              echo "✓ Tunnel ready: $TUNNEL_URL"
-              echo "tunnel_url=$TUNNEL_URL" >> "$GITHUB_OUTPUT"
-              break
-            fi
-            if [ $i -eq 60 ]; then
-              echo "✗ Failed to get tunnel URL"
-              docker logs homenfv-demo-configured
+            if [ $i -eq 15 ]; then
+              echo "Agent failed to start"
+              docker logs homenfv-agent
               exit 1
             fi
             sleep 2
           done
+
+      # --- Start cloudflared tunnel to expose agent ---
+      - name: Start tunnel
+        id: tunnel
+        run: |
+          cloudflared tunnel --url http://127.0.0.1:8787 --no-autoupdate > /tmp/cloudflared.log 2>&1 &
+          TUNNEL_PID=$!
+          echo "tunnel_pid=$TUNNEL_PID" >> "$GITHUB_OUTPUT"
+
+          # Wait for tunnel URL
+          for i in $(seq 1 30); do
+            TUNNEL_URL=$(grep -oP 'https://[a-z0-9-]+\.trycloudflare\.com' /tmp/cloudflared.log | head -1)
+            if [ -n "$TUNNEL_URL" ]; then
+              echo "Tunnel URL: $TUNNEL_URL"
+              echo "tunnel_url=$TUNNEL_URL" >> "$GITHUB_OUTPUT"
+              break
+            fi
+            sleep 2
+          done
+
+          if [ -z "$TUNNEL_URL" ]; then
+            echo "Failed to get tunnel URL"
+            cat /tmp/cloudflared.log
+            exit 1
+          fi
 
       # --- Deploy Worker pointing to tunnel ---
       - name: Generate demo wrangler.toml
@@ -220,7 +195,6 @@ jobs:
             --var AGENT_SHARED_SECRET:${{ steps.agent.outputs.agent_secret }} 2>&1)
           echo "$DEPLOY_OUT"
 
-          # Extract workers.dev URL (try multiple patterns)
           DEMO_URL=$(echo "$DEPLOY_OUT" | grep -oE 'https://[^ ]+\.workers\.dev' | head -1)
           if [ -z "$DEMO_URL" ]; then
             echo "ERROR: Could not extract demo URL from deploy output"
@@ -230,7 +204,7 @@ jobs:
           echo "demo_url=$DEMO_URL" >> "$GITHUB_OUTPUT"
           echo "jwt_secret=$JWT_SECRET" >> "$GITHUB_OUTPUT"
 
-      # --- Seed admin and configure sync ---
+      # --- Seed admin and start sync loop ---
       - name: Seed admin user
         run: |
           echo "::add-mask::${{ inputs.admin_password }}"
@@ -264,9 +238,7 @@ jobs:
 
           if [ "$HTTP_CODE" != "201" ]; then
             echo "WARNING: API registration returned $HTTP_CODE, trying direct KV write..."
-            # Fallback: write admin user directly to KV via wrangler
             SALT=$(openssl rand -hex 16)
-            # Use node to hash the password with PBKDF2 matching our auth.ts
             HASH=$(node -e "
               const crypto = require('crypto');
               const salt = Buffer.from('$SALT', 'hex');
@@ -290,7 +262,6 @@ jobs:
         if: inputs.disable_registration == true
         run: |
           cd worker
-          # Redeploy with registration disabled
           npx wrangler deploy \
             --config wrangler.demo.toml \
             --var JWT_SECRET:${{ steps.deploy.outputs.jwt_secret }} \
@@ -298,30 +269,38 @@ jobs:
             --var DISABLE_REGISTRATION:true 2>&1
           echo "Registration disabled — only seeded admin can use the demo"
 
-      - name: Enable agent sync loop
+      - name: Start agent sync loop
         run: |
-          # Update container to include worker URL for sync
-          docker exec homenfv-demo-configured sh -c "
-            export HOMENFV_WORKER_URL='${{ steps.deploy.outputs.demo_url }}'
-            echo 'Sync enabled with worker: ${{ steps.deploy.outputs.demo_url }}'
-          "
+          # Restart agent container with worker URL for sync
+          docker stop homenfv-agent 2>/dev/null || true
+          docker rm homenfv-agent 2>/dev/null || true
+
+          docker run -d \
+            --name homenfv-agent \
+            --network host \
+            -v "${{ steps.agent.outputs.storage_root }}":/app/storage \
+            -e HOMENFV_LISTEN_ADDR=127.0.0.1:8787 \
+            -e HOMENFV_SHARED_SECRET=${{ steps.agent.outputs.agent_secret }} \
+            -e HOMENFV_STORAGE_ROOT="/app/storage" \
+            -e HOMENFV_WORKER_URL=${{ steps.deploy.outputs.demo_url }} \
+            "$DEMO_IMAGE"
+
+          sleep 2
+          echo "Agent restarted with sync loop"
 
       - name: Print demo info
         run: |
           echo "============================================"
-          echo "  🚀 DEMO ENVIRONMENT READY (CONTAINERIZED)"
+          echo "  DEMO ENVIRONMENT READY (CONTAINERIZED)"
           echo "============================================"
           echo ""
           echo "  URL:      ${{ steps.deploy.outputs.demo_url }}"
           echo "  Username: ${{ inputs.admin_username }}"
           echo "  Duration: ${{ inputs.duration }} minutes"
           echo "  Demo ID:  ${{ steps.resources.outputs.demo_id }}"
-          echo "  Agent:    Running in Docker container"
+          echo "  Agent:    Running in Docker container (host network)"
           echo "  Tunnel:   ${{ steps.tunnel.outputs.tunnel_url }}"
           echo "  Storage:  ${{ steps.agent.outputs.storage_root }}"
-          echo ""
-          echo "  Container: homenfv-demo-configured"
-          echo "  Image:     ${{ env.DEMO_IMAGE }}"
           echo ""
           echo "  Full functionality — upload, browse, download,"
           echo "  sync, and caching all active."
@@ -343,10 +322,13 @@ jobs:
             ELAPSED=$((ELAPSED + INTERVAL))
             REMAINING=$(( (DURATION - ELAPSED) / 60 ))
 
-            echo "--- ${REMAINING}m remaining | Container logs (last 10 lines) ---"
-            docker logs --tail 10 homenfv-demo-configured 2>/dev/null || true
-            echo ""
-            echo "--- Agent storage contents: ---"
+            # Check agent is still running
+            if ! docker ps | grep -q homenfv-agent; then
+              echo "WARNING: Agent container stopped! Logs:"
+              docker logs homenfv-agent 2>/dev/null || true
+            fi
+
+            echo "--- ${REMAINING}m remaining | Agent storage contents: ---"
             find "$STORAGE" -type f -printf '%s\t%p\n' 2>/dev/null | sort || echo "(empty)"
             echo ""
           done
@@ -357,11 +339,12 @@ jobs:
         run: |
           cd worker
           DEMO_ID="${{ steps.resources.outputs.demo_id }}"
-          echo "Tearing down containerized demo..."
+          echo "Tearing down demo..."
 
-          # Stop and remove containers
-          docker stop homenfv-demo-configured 2>/dev/null || true
-          docker rm homenfv-demo-configured 2>/dev/null || true
+          # Stop agent container and tunnel
+          docker stop homenfv-agent 2>/dev/null || true
+          docker rm homenfv-agent 2>/dev/null || true
+          kill ${{ steps.tunnel.outputs.tunnel_pid }} 2>/dev/null || true
 
           # Delete worker
           if [ -f wrangler.demo.toml ]; then
@@ -381,7 +364,6 @@ jobs:
 
           # Empty and delete R2 bucket
           if [ -n "$DEMO_ID" ]; then
-            # List and delete all objects first
             OBJECTS=$(npx wrangler r2 object list "${DEMO_ID}-cache" 2>&1 | grep -oP '"key"\s*:\s*"\K[^"]+' || true)
             for obj in $OBJECTS; do
               npx wrangler r2 object delete "${DEMO_ID}-cache/$obj" 2>&1 || true
@@ -389,4 +371,4 @@ jobs:
             npx wrangler r2 bucket delete "${DEMO_ID}-cache" 2>&1 || true
           fi
 
-          echo "Containerized demo teardown complete — all resources deleted."
+          echo "Demo teardown complete — all resources deleted."
